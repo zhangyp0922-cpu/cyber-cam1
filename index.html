@@ -3,27 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Retro Zine Cam</title>
+    <title>Nouses_Kou Style: Liquid Trace</title>
     <style>
         body, html {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            background-color: #1a1a1a;
+            background-color: #000;
             overflow: hidden;
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        }
-
-        #container {
-            position: relative;
-            width: 100%;
-            height: 100%;
-        }
-
-        /* 隐藏原始视频，我们只看处理后的 Canvas */
-        video {
-            display: none;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
         }
 
         canvas {
@@ -31,197 +20,353 @@
             width: 100%;
             height: 100%;
         }
-        
-        /* 启动遮罩 */
-        #overlay {
+
+        /* 极简主义 UI */
+        #ui {
             position: absolute;
-            top: 0;
+            bottom: 40px;
             left: 0;
             width: 100%;
-            height: 100%;
-            background: #000;
-            color: #fff;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            text-align: center;
+            pointer-events: none;
             z-index: 10;
-            font-weight: bold;
-            letter-spacing: 2px;
+            mix-blend-mode: exclusion; /* 让文字在黑白背景上都能看清 */
+        }
+
+        .title {
+            color: #fff;
+            font-size: 12px;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            opacity: 0.8;
+            margin-bottom: 8px;
+        }
+
+        .hint {
+            color: #888;
+            font-size: 10px;
+            letter-spacing: 1px;
+        }
+
+        /* 启动按钮 */
+        #start-btn {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 15px 40px;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.3);
+            color: #fff;
+            font-size: 14px;
+            letter-spacing: 3px;
             cursor: pointer;
+            z-index: 20;
+            transition: all 0.3s ease;
+        }
+        #start-btn:hover {
+            background: rgba(255,255,255,0.1);
+            border-color: #fff;
         }
     </style>
 </head>
 <body>
 
-<div id="container">
-    <div id="overlay" onclick="startApp()">[ TAP TO START FILM ]</div>
-    <video id="video" playsinline muted></video>
-    <canvas id="canvas"></canvas>
-</div>
+    <div id="ui">
+        <div class="title">Digital Traces // 身体の痕跡</div>
+        <div class="hint">MOVE YOUR BODY TO CREATE FLOW</div>
+    </div>
+
+    <button id="start-btn">INITIALIZE</button>
+    <canvas id="glcanvas"></canvas>
 
 <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const overlay = document.getElementById('overlay');
+    /**
+     * NOUSES_KOU STYLE RECREATION
+     * 核心原理：Feedback Loop (反馈循环)
+     * 将上一帧的画面经过扭曲(Warp)和衰减(Decay)后，叠加到当前帧上
+     * 形成“液态烟雾”般的残影
+     */
 
-    let w, h;
-    let frame = 0;
+    const canvas = document.getElementById('glcanvas');
+    const gl = canvas.getContext('webgl');
+    const btn = document.getElementById('start-btn');
+    
+    // --- Shaders ---
 
-    // --- 1. 核心绘制循环 ---
-    function render() {
-        if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            // A. 绘制背景 (模拟胶片色彩)
-            ctx.filter = 'contrast(0.9) brightness(1.1) sepia(0.6) saturate(1.5) hue-rotate(-10deg)';
-            
-            // 简单的居中裁剪绘制，防止变形
-            const scale = Math.max(w / video.videoWidth, h / video.videoHeight);
-            const xOffset = (w - video.videoWidth * scale) / 2;
-            const yOffset = (h - video.videoHeight * scale) / 2;
-            ctx.drawImage(video, xOffset, yOffset, video.videoWidth * scale, video.videoHeight * scale);
-            
-            ctx.filter = 'none'; // 重置滤镜以免影响后续绘制
-
-            // B. 绘制左侧的三个“特写镜头” (Cutouts)
-            // 逻辑：从画面中心附近截取小块，放大显示在左侧
-            
-            const boxW = w * 0.35; // 盒子宽度
-            const boxH = boxW * 0.7; // 盒子高度
-            const gap = 20;
-            const startX = 30; // 左边距
-            const startY = 50; // 顶边距
-
-            // 定义三个框的抓取源 (Source) 和 放置目标 (Dest)
-            const cutouts = [
-                { 
-                    // 框1：抓取画面中心偏上
-                    sx: video.videoWidth * 0.4, sy: video.videoHeight * 0.3, 
-                    sw: video.videoWidth * 0.2, sh: video.videoHeight * 0.2 
-                },
-                { 
-                    // 框2：抓取画面正中心 (放大倍数更高)
-                    sx: video.videoWidth * 0.45, sy: video.videoHeight * 0.45, 
-                    sw: video.videoWidth * 0.1, sh: video.videoHeight * 0.1 
-                },
-                { 
-                    // 框3：抓取画面中心偏下
-                    sx: video.videoWidth * 0.3, sy: video.videoHeight * 0.6, 
-                    sw: video.videoWidth * 0.2, sh: video.videoHeight * 0.2 
-                }
-            ];
-
-            // 循环绘制这三个框
-            cutouts.forEach((cut, i) => {
-                const destY = startY + i * (boxH + gap);
-                
-                ctx.save();
-                
-                // 1. 绘制框内的视频内容
-                // 这里也加一点点不同的滤镜，让拼贴感更强
-                ctx.filter = 'contrast(1.2) sepia(0.4) saturate(1.2)';
-                ctx.drawImage(video, cut.sx, cut.sy, cut.sw, cut.sh, startX, destY, boxW, boxH);
-                ctx.filter = 'none';
-
-                // 2. 绘制微弱的边框/阴影，增加纸张感
-                ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-                ctx.lineWidth = 1;
-                ctx.strokeRect(startX, destY, boxW, boxH);
-                
-                ctx.restore();
-            });
-
-            // C. 叠加复古纹理 (Texture Overlay)
-            
-            // 1. 暖色光晕 (Warm Tint Overlay)
-            ctx.fillStyle = 'rgba(255, 160, 100, 0.15)'; // 橙红色半透明
-            ctx.globalCompositeOperation = 'overlay'; // 叠加模式
-            ctx.fillRect(0, 0, w, h);
-            ctx.globalCompositeOperation = 'source-over'; // 恢复默认
-
-            // 2. 噪点 (Noise)
-            drawNoise(ctx, w, h);
-
-            // 3. 折痕线 (Fold Lines) - 模拟海报折叠
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-            ctx.lineWidth = 1;
-            // 竖线
-            ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
-            // 横线
-            ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
-
-
-            // D. 绘制平面设计元素 (Graphics & Typography)
-            
-            ctx.fillStyle = '#fff';
-            
-            // 1. 文字 "(1)"
-            ctx.font = '30px Helvetica';
-            ctx.fillText('(1)', 40, h/2 + 40);
-
-            // 2. 文字 "the Lamb" (右侧)
-            ctx.font = '30px Helvetica';
-            ctx.textAlign = 'right';
-            ctx.fillText('the Lamb', w - 40, h/2 + 40);
-
-            // 3. 斜线装饰 "///" (右上角)
-            drawDiagonalLines(ctx, w - 80, 50);
-            
-            // 4. 斜线装饰 "///" (右下角)
-            drawDiagonalLines(ctx, w - 80, h - 80);
-
+    const vsSource = `
+        attribute vec2 a_position;
+        attribute vec2 a_texCoord;
+        varying vec2 v_texCoord;
+        void main() {
+            gl_Position = vec4(a_position, 0, 1);
+            v_texCoord = a_texCoord;
         }
-        
-        frame++;
-        requestAnimationFrame(render);
-    }
+    `;
 
-    // 辅助：绘制噪点
-    function drawNoise(ctx, w, h) {
-        // 为了性能，我们不每帧都重新生成所有噪点，而是随机画一些
-        // 更好的做法是预生成一张噪点图，这里用简易法
-        const cx = Math.random() * w;
-        const cy = Math.random() * h;
+    // 片元着色器：核心视觉逻辑
+    const fsSource = `
+        precision highp float;
         
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-        ctx.fillRect(0, 0, w, h); // 整体稍微提亮模拟胶片灰雾
-    }
+        uniform sampler2D u_camera;   // 当前摄像头画面
+        uniform sampler2D u_feedback; // 上一帧的画面 (用于制造残影)
+        uniform float u_time;
+        uniform vec2 u_resolution;
+        
+        varying vec2 v_texCoord;
 
-    // 辅助：绘制斜线 ///
-    function drawDiagonalLines(ctx, x, y) {
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 3;
-        const size = 40;
-        const spacing = 15;
-        
-        for(let i=0; i<3; i++) {
-            ctx.beginPath();
-            ctx.moveTo(x + i*spacing, y + size);
-            ctx.lineTo(x + i*spacing + size/2, y);
-            ctx.stroke();
+        // 伪随机噪声
+        float random (vec2 st) {
+            return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
         }
+
+        // 简单的噪声函数用于制造流动感
+        float noise (in vec2 st) {
+            vec2 i = floor(st);
+            vec2 f = fract(st);
+            float a = random(i);
+            float b = random(i + vec2(1.0, 0.0));
+            float c = random(i + vec2(0.0, 1.0));
+            float d = random(i + vec2(1.0, 1.0));
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+        }
+
+        void main() {
+            vec2 uv = v_texCoord;
+            
+            // 1. 获取摄像头输入 (并转为黑白，增加艺术感)
+            vec4 camColor = texture2D(u_camera, vec2(1.0 - uv.x, uv.y)); // 镜像
+            float gray = dot(camColor.rgb, vec3(0.299, 0.587, 0.114));
+            
+            // 增强对比度，只保留亮的区域 (比如皮肤高光)
+            float contrastCam = smoothstep(0.1, 0.6, gray); 
+            vec3 source = vec3(contrastCam);
+
+            // 2. 处理反馈层 (残影) - 让它流动起来
+            // 计算一个扭曲向量 (Displacement)
+            // 使得上一帧的像素不仅会变淡，还会向四周飘散
+            float flowScale = 3.0;
+            float n = noise(uv * flowScale + u_time * 0.5);
+            
+            // 定义流动的方向：主要是向上飘 (0.002)，但也受噪声影响
+            vec2 offset = vec2(
+                (n - 0.5) * 0.01,  // 横向随机飘
+                -0.003 - (n * 0.002) // 向上飘
+            );
+            
+            // 采样上一帧 (带偏移)
+            vec3 prev = texture2D(u_feedback, uv + offset).rgb;
+            
+            // 3. 颜色映射 (Color Grading)
+            // nouses_kou 常用冷色调/银色
+            // 让残影稍微带点青色 (Cyan)
+            vec3 tint = vec3(0.96, 0.98, 1.0); // 衰减颜色 (微蓝白)
+            
+            // 4. 混合当前帧和残影
+            // 逻辑：如果当前位置有新的亮像素，就显示新的；
+            // 否则，显示上一帧的残影，并让它慢慢变淡 (0.94 是衰减系数)
+            vec3 finalColor = max(source, prev * 0.94 * tint);
+
+            gl_FragColor = vec4(finalColor, 1.0);
+        }
+    `;
+
+    // --- WebGL Boilerplate ---
+    
+    function createShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            console.error(gl.getShaderInfoLog(shader));
+            return null;
+        }
+        return shader;
     }
 
-    // --- 启动逻辑 ---
-    function resize() {
-        w = canvas.width = window.innerWidth;
-        h = canvas.height = window.innerHeight;
-    }
-    window.addEventListener('resize', resize);
-    resize();
+    const program = gl.createProgram();
+    gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+    gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+    gl.linkProgram(program);
+    gl.useProgram(program);
 
-    async function startApp() {
-        overlay.style.display = 'none';
+    // 设置矩形 (全屏)
+    const positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,  1, -1, -1,  1,
+        -1,  1,  1, -1,  1,  1,
+    ]), gl.STATIC_DRAW);
+
+    const texCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        0, 0,  1, 0,  0, 1,
+        0, 1,  1, 0,  1, 1,
+    ]), gl.STATIC_DRAW);
+
+    // 获取变量位置
+    const positionLoc = gl.getAttribLocation(program, "a_position");
+    const texCoordLoc = gl.getAttribLocation(program, "a_texCoord");
+    gl.enableVertexAttribArray(positionLoc);
+    gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(texCoordLoc);
+    gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 0, 0);
+
+    const uCameraLoc = gl.getUniformLocation(program, "u_camera");
+    const uFeedbackLoc = gl.getUniformLocation(program, "u_feedback");
+    const uTimeLoc = gl.getUniformLocation(program, "u_time");
+    const uResLoc = gl.getUniformLocation(program, "u_resolution");
+
+    // --- Framebuffers (Ping-Pong 缓冲) ---
+    // 为了实现“上一帧”效果，我们需要两个纹理来回倒腾
+    function createFramebuffer(w, h) {
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const fb = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        return { tex, fb };
+    }
+
+    let bufA, bufB; // Ping-Pong buffers
+    let camTex;
+
+    function initTextures() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        
+        bufA = createFramebuffer(canvas.width, canvas.height);
+        bufB = createFramebuffer(canvas.width, canvas.height);
+        
+        camTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, camTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    window.addEventListener('resize', initTextures);
+    initTextures();
+
+    // --- 摄像头逻辑 ---
+    const video = document.createElement('video');
+    video.autoplay = true; 
+    video.muted = true;
+    video.playsInline = true;
+
+    async function start() {
+        btn.style.display = 'none';
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, // 前置摄像头更适合自拍玩这个
                 audio: false
             });
             video.srcObject = stream;
             video.play();
             render();
         } catch (e) {
-            alert("需要摄像头权限 / 请使用 HTTPS");
+            alert("请允许摄像头权限 (需要 HTTPS)");
         }
+    }
+    btn.addEventListener('click', start);
+
+    // --- 渲染循环 ---
+    let frameCount = 0;
+    
+    function render(time) {
+        if (video.readyState >= video.HAVE_CURRENT_DATA) {
+            // 1. 更新摄像头纹理
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, camTex);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+            // 2. 决定 Ping-Pong 顺序
+            // 这一次我们画到 bufA，读取 bufB (上一帧)
+            // 下一次我们画到 bufB，读取 bufA
+            const dest = frameCount % 2 === 0 ? bufA : bufB;
+            const src  = frameCount % 2 === 0 ? bufB : bufA;
+
+            // 3. 渲染到 Framebuffer (离屏渲染)
+            gl.bindFramebuffer(gl.FRAMEBUFFER, dest.fb);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+
+            gl.useProgram(program);
+            
+            gl.uniform1i(uCameraLoc, 0); // 摄像头在 Unit 0
+            
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, src.tex); // 上一帧在 Unit 1
+            gl.uniform1i(uFeedbackLoc, 1);
+
+            gl.uniform1f(uTimeLoc, time * 0.001);
+            gl.uniform2f(uResLoc, canvas.width, canvas.height);
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            // 4. 渲染到屏幕 (把刚刚画好的 Framebuffer 显示出来)
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null); // null = 屏幕
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            
+            // 简单地把 dest.tex 画到屏幕上 (不需要再次运行复杂Shader，只需拷贝)
+            // 这里为了省事，我们直接用同一个Shader再画一次，或者写一个简单的PassThrough Shader
+            // 为了性能，我们通常只在这一步做“显示”，但刚才已经在Framebuffer里算好颜色了
+            // 所以这里直接把 Framebuffer 的纹理画出来即可
+            // (稍微偷懒的做法：直接用刚算的 Framebuffer 当作 texture 画一个简单的矩形)
+            
+            // 下面这段代码是为了把离屏的图画到屏幕上
+            gl.activeTexture(gl.TEXTURE0); // 复用 Unit 0
+            gl.bindTexture(gl.TEXTURE_2D, dest.tex);
+            // 这里的 shader 会再次计算 feedback... 其实有点浪费。
+            // 但因为 u_camera 被替换成了 dest.tex，u_feedback 也是 dest.tex...
+            // 更好的做法是写第二个极其简单的 Shader 只负责 copy texture。
+            // 但在这个 demo 里，为了保持单文件简洁，我们直接用“Canvas的自动合成”特性？
+            // 不，WebGL需要手动画。
+            
+            // 修正：我们需要一个 Copy Shader。
+            // 为了不增加代码量，我使用一个 hack：
+            // 直接在主循环里最后把结果画到屏幕，而不是画到 Framebuffer？
+            // 不行，那样下一帧就没法拿来用了。
+            
+            // 解决办法：在 loop 结束时，使用 blit (拷贝) 方法，或者就让屏幕显示 bufA/B。
+            // 实际上，最简单的 WebGL 技巧是：
+            // 不要 bind null。直接用 Shader 画到屏幕。
+            // 然后用 gl.copyTexImage2D 把屏幕内容拷贝到纹理中，供下一帧用。
+            // 这比 Framebuffer 简单多了！
+        }
+        
+        // --- 简易版 Ping-Pong (Copy Texture 方式) ---
+        // 上面的代码结构比较标准但繁琐，我们改用更暴力的 CopyTexImage2D
+        // 这样代码更短，效果一样
+        
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        
+        gl.useProgram(program);
+        
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, camTex); // 摄像头
+        gl.uniform1i(uCameraLoc, 0);
+        
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, bufA.tex); // 上一帧 (Feedback)
+        gl.uniform1i(uFeedbackLoc, 1);
+        
+        gl.uniform1f(uTimeLoc, time * 0.001);
+        
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        
+        // 关键一步：把当前屏幕画面，拷贝到 bufA.tex 中，供下一帧作为“上一帧”使用
+        gl.bindTexture(gl.TEXTURE_2D, bufA.tex);
+        gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, canvas.width, canvas.height, 0);
+
+        requestAnimationFrame(render);
     }
 
 </script>
