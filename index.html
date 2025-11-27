@@ -3,258 +3,339 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cyber Vision Lite</title>
+    <title>Eco-Data Monitoring System</title>
     <style>
+        /* 基础设置，确保全屏无边距 */
         body, html {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            background-color: #000;
+            background-color: #111; /* 深色背景，防闪烁 */
             overflow: hidden;
-            font-family: 'Courier New', Courier, monospace;
+            font-family: 'Courier New', Courier, monospace; /* 科技感等宽字体 */
         }
 
-        /* 容器用于实现整体震动效果 */
+        /* 容器用于叠放视频和画布 */
         #container {
             position: relative;
             width: 100%;
             height: 100%;
         }
 
-        /* 视频直接铺满，不经过 JS 处理，性能最高 */
+        /* 视频层：在最底层，直接显示摄像头画面 */
         video {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            object-fit: cover; /* 保证铺满不留黑边 */
-            z-index: 0;
+            object-fit: cover; /* 确保画面填满屏幕 */
+            z-index: 1;
+            filter: grayscale(30%) contrast(1.1); /* 轻微调整视频风格以匹配氛围 */
         }
 
-        /* 覆盖在上面的特效画布 */
+        /* 画布层：在视频之上，用于绘制所有数据UI */
         canvas {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            z-index: 10;
+            z-index: 2; /* 确保在视频上方 */
         }
-
-        /* 纯 CSS 实现的轻量级 Glitch 故障条 */
-        .glitch-line {
-            position: absolute;
-            left: 0;
-            width: 100%;
-            height: 2px;
-            background: rgba(255, 255, 255, 0.5);
-            z-index: 20;
-            opacity: 0;
-            pointer-events: none;
-            animation: scanline 3s linear infinite;
-        }
-
-        @keyframes scanline {
-            0% { top: -10%; opacity: 0; }
-            50% { opacity: 0.5; }
-            100% { top: 110%; opacity: 0; }
-        }
-
-        /* 模拟屏幕整体色差故障 */
-        .screen-glitch {
-            animation: rgbShift 0.2s steps(2) infinite;
-            display: none; /* JS控制开启 */
-        }
-
-        @keyframes rgbShift {
-            0% { transform: translate(2px, 0); filter: hue-rotate(90deg); }
-            50% { transform: translate(-2px, 0); filter: hue-rotate(-90deg); }
-            100% { transform: translate(0, 0); }
-        }
-
     </style>
 </head>
 <body>
 
 <div id="container">
-    <video id="video" autoplay playsinline webkit-playsinline muted></video>
+    <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
-    <div class="glitch-line" style="animation-delay: 0s;"></div>
-    <div class="glitch-line" style="animation-delay: 1.5s;"></div>
 </div>
 
 <script>
+    // --- 配置项 ---
+    const config = {
+        particleCount: 400, // 环境流动粒子数量（白色小点）
+        connectionDistance: 80, // 粒子间连线的最大距离（橙色线）
+        maxBoxes: 6, // 同时存在的最大跟踪框数量
+        uiTextColor: 'rgba(255, 255, 255, 0.9)',
+        flowDotColor: 'rgba(255, 255, 255, 0.6)',
+        flowLineColor: 'rgba(255, 100, 50, 0.3)', // 橙色细线
+        boxLineColor: 'rgba(255, 255, 255, 0.8)', // 白色框线
+        connectorColor: 'rgba(255, 50, 50, 0.9)' // 红色连接线
+    };
+
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const container = document.getElementById('container');
 
-    // 适配屏幕
+    let w, h; // 画布宽 高
+
+    // --- 1. 初始化与摄像头设置 ---
+
     function resize() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
     }
     window.addEventListener('resize', resize);
     resize();
 
-    // 1. 启动摄像头 (仅做显示，不做计算)
     async function startCamera() {
         try {
+            // 优先请求后置摄像头 (environment)
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: 'environment', // 后置
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
-                },
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
                 audio: false
             });
             video.srcObject = stream;
-            video.play();
         } catch (e) {
-            // 如果在电脑上没后置摄像头，会自动回退到前置
-            console.log("Camera Error:", e);
-            alert("请确保在 HTTPS 环境下运行，并允许摄像头权限。");
+            console.error("Camera access error:", e);
+            // 如果失败（比如在电脑上），尝试请求任意摄像头
+            try {
+                const streamFallback = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                video.srcObject = streamFallback;
+            } catch (e2) {
+                alert("无法访问摄像头。请确保在 HTTPS 环境下运行并授予权限。");
+            }
         }
     }
 
-    // 2. 视觉模拟系统 (模拟 AI 识别框)
-    const targets = [];
-    
-    // 生成随机字符串
-    function randomStr() {
-        const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        return chars.charAt(Math.floor(Math.random() * chars.length)) + 
-               chars.charAt(Math.floor(Math.random() * chars.length)) + 
-               "-" + Math.floor(Math.random() * 99);
+    // --- 2. 系统组件定义 ---
+
+    // 工具函数：生成随机标签
+    function randomLabel() {
+        const prefixes = ['F-Stage', 'P-3 v', 'Node-', 'Sensor '];
+        const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+        const suffix = Math.floor(Math.random() * 99) + (Math.random() > 0.5 ? '' : '.1');
+        return `[${prefix}${suffix}]`;
     }
 
-    class Target {
+    // 类：环境流粒子 (白色小点和橙色连线)
+    class Particle {
         constructor() {
             this.reset();
+            this.y = Math.random() * h; // 初始随机分布在全屏高度
+            // 给一个随机初始相位，让波动看起来不那么整齐划一
+            this.waveOffset = Math.random() * Math.PI * 2; 
         }
-
         reset() {
-            // 随机生成一个框的位置
-            this.x = Math.random() * (canvas.width - 100);
-            this.y = Math.random() * (canvas.height - 100);
-            this.w = 50 + Math.random() * 100;
-            this.h = 50 + Math.random() * 100;
-            this.life = 60 + Math.random() * 100; // 存活帧数
-            this.maxLife = this.life;
-            this.label = randomStr();
-            this.color = Math.random() > 0.8 ? '#00ffcc' : '#ffffff'; // 偶尔出现青色关键目标
-            
-            // 模拟“锁定”动画
-            this.scale = 1.5; 
+            this.x = Math.random() * w;
+            // 从屏幕底部往上流，或者从左往右流。这里模拟图中略微向右上的趋势
+            this.baseY = h + Math.random() * 200; 
+            this.speedX = 0.5 + Math.random() * 1.5;
+            this.speedY = -0.5 - Math.random() * 1;
+            this.size = 1 + Math.random() * 1.5;
         }
+        update() {
+            this.x += this.speedX;
+            this.baseY += this.speedY;
+            // 加入正弦波运动，模拟气流/地形起伏
+            this.y = this.baseY + Math.sin(this.x * 0.01 + this.waveOffset) * 30;
 
+            // 飞出屏幕后重置
+            if (this.x > w + 50 || this.y < -50) {
+                this.x = -50;
+                this.baseY = Math.random() * h + Math.random() * 200;
+            }
+        }
+        draw(ctx) {
+            ctx.fillStyle = config.flowDotColor;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    // 类：数据跟踪框 (带黑白块和红线的方框)
+    class TrackingBox {
+        constructor() {
+            this.reset();
+            this.life = Math.random() * 200 + 100; // 初始给一个随机寿命
+        }
+        reset() {
+            // 方框位置
+            this.x = Math.random() * (w - 150);
+            this.y = Math.random() * (h - 150);
+            this.w = 80 + Math.random() * 60;
+            this.h = 100 + Math.random() * 80;
+            
+            // 连接的目标点位置（模拟在地面/空中的某个点）
+            this.targetX = this.x + (Math.random() - 0.5) * 300;
+            this.targetY = this.y + 100 + Math.random() * 200;
+
+            this.label = randomLabel();
+            this.life = 300 + Math.random() * 300; // 总存活帧数
+            this.maxLife = this.life;
+            this.state = 'spawning'; // spawning, tracking, dying
+            this.opacity = 0;
+        }
         update() {
             this.life--;
-            // 简单的漂移效果，模拟跟踪
-            this.x += (Math.random() - 0.5) * 2;
-            this.y += (Math.random() - 0.5) * 2;
+            // 简单的状态机管理透明度
+            if (this.life > this.maxLife - 50) {
+                this.opacity += 0.02; // 渐显
+            } else if (this.life < 50) {
+                this.opacity -= 0.02; // 渐隐
+            }
+            if (this.opacity > 1) this.opacity = 1;
+            if (this.opacity < 0) this.opacity = 0;
 
-            // 收缩动画
-            if (this.scale > 1) this.scale -= 0.05;
+            // 缓慢移动，模拟跟踪
+            this.x += (Math.random() - 0.5) * 0.5;
+            this.y += (Math.random() - 0.5) * 0.5;
 
             if (this.life <= 0) this.reset();
         }
-
         draw(ctx) {
-            const alpha = Math.min(1, this.life / 20); // 消失时渐变
-            ctx.strokeStyle = this.color;
-            ctx.fillStyle = this.color;
-            ctx.globalAlpha = alpha;
+            if (this.opacity <= 0) return;
+            ctx.save();
+            ctx.globalAlpha = this.opacity;
+
+            // 1. 绘制连接红线和目标点
+            ctx.strokeStyle = config.connectorColor;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            // 从方框底部中心连到目标点
+            ctx.moveTo(this.x + this.w / 2, this.y + this.h);
+            ctx.lineTo(this.targetX, this.targetY);
+            ctx.stroke();
+            
+            // 目标点圆圈
+            ctx.fillStyle = config.connectorColor;
+            ctx.beginPath();
+            ctx.arc(this.targetX, this.targetY, 4, 0, Math.PI*2);
+            ctx.fill();
+            // 目标点外光环
+            ctx.strokeStyle = config.connectorColor;
+            ctx.beginPath();
+            ctx.arc(this.targetX, this.targetY, 8 + Math.sin(Date.now()/200)*2, 0, Math.PI*2);
+            ctx.stroke();
+
+
+            // 2. 绘制方框主体
+            ctx.strokeStyle = config.boxLineColor;
             ctx.lineWidth = 1;
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
 
-            const currentW = this.w * this.scale;
-            const currentH = this.h * this.scale;
-            const currentX = this.x - (currentW - this.w)/2;
-            const currentY = this.y - (currentH - this.h)/2;
+            // 3. 绘制内部黑白数据块 (模拟图片中的样式)
+            const blockH = 20;
+            // 黑色底
+            ctx.fillStyle = 'rgba(0,0,0,0.8)';
+            ctx.fillRect(this.x + 5, this.y + this.h/2 - blockH, this.w - 10, blockH*2);
+            // 白色块
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.fillRect(this.x + 10, this.y + this.h/2 - blockH + 5, 15, blockH*2 - 10);
+            // 右侧白色小细条
+            ctx.fillRect(this.x + this.w - 15, this.y + this.h/2 - 5, 5, 10);
 
-            // 绘制赛博风格的边角 (而不是完整的框)
-            const len = 10;
-            ctx.beginPath();
-            // 左上
-            ctx.moveTo(currentX, currentY + len); ctx.lineTo(currentX, currentY); ctx.lineTo(currentX + len, currentY);
-            // 右上
-            ctx.moveTo(currentX + currentW - len, currentY); ctx.lineTo(currentX + currentW, currentY); ctx.lineTo(currentX + currentW, currentY + len);
-            // 右下
-            ctx.moveTo(currentX + currentW, currentY + currentH - len); ctx.lineTo(currentX + currentW, currentY + currentH); ctx.lineTo(currentX + currentW - len, currentY + currentH);
-            // 左下
-            ctx.moveTo(currentX + len, currentY + currentH); ctx.lineTo(currentX, currentY + currentH); ctx.lineTo(currentX, currentY + currentH - len);
-            ctx.stroke();
 
-            // 绘制文字标签
+            // 4. 绘制标签文字
+            ctx.fillStyle = config.uiTextColor;
             ctx.font = "12px Courier New";
-            ctx.fillText(this.label, currentX + 4, currentY - 6);
+            ctx.fillText(this.label, this.x, this.y - 8);
+            
+            // 框内小文字
+            ctx.font = "10px Courier New";
+            ctx.fillText("DATA_STREAM...", this.x + 30, this.y + this.h/2 + 5);
 
-            // 绘制装饰性虚线
-            ctx.setLineDash([2, 4]);
-            ctx.beginPath();
-            ctx.moveTo(currentX + currentW + 5, currentY);
-            ctx.lineTo(currentX + currentW + 30, currentY - 20);
-            ctx.stroke();
-            ctx.setLineDash([]); // 重置
-
-            ctx.globalAlpha = 1;
+            ctx.restore();
         }
     }
 
-    // 初始化 5 个模拟目标
-    for(let i=0; i<6; i++) {
-        targets.push(new Target());
-    }
 
-    // 3. 渲染循环
-    let frame = 0;
-    function loop() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // --- 3. 实例化系统 ---
 
-        // 绘制网格背景 (Grid)
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-        ctx.lineWidth = 1;
-        const gridSize = 80;
-        // 简单的动态网格
-        const offset = (Date.now() / 50) % gridSize; 
+    const particles = Array.from({ length: config.particleCount }, () => new Particle());
+    const boxes = Array.from({ length: config.maxBoxes }, () => new TrackingBox());
+
+    // --- 4. 主渲染循环 ---
+    function animate() {
+        ctx.clearRect(0, 0, w, h); // 清空画布
+
+        // A. 绘制环境流系统 (点和网络线)
+        ctx.lineWidth = 0.5;
+        ctx.strokeStyle = config.flowLineColor;
         
-        // 竖线
-        for (let x = offset; x < canvas.width; x += gridSize) {
-            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-        }
-        // 横线
-        for (let y = 0; y < canvas.height; y += gridSize) {
-            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-        }
+        // 双重循环绘制粒子间的连线 (性能敏感点，注意粒子总数)
+        for (let i = 0; i < particles.length; i++) {
+            const p1 = particles[i];
+            p1.update();
+            p1.draw(ctx);
 
-        // 更新并绘制每一个目标
-        targets.forEach(t => {
-            t.update();
-            t.draw(ctx);
+            // 寻找附近的粒子进行连接
+            // 为了性能，只和数组中后面的粒子比较，避免重复计算
+            for (let j = i + 1; j < particles.length; j++) {
+                const p2 = particles[j];
+                const dx = p1.x - p2.x;
+                const dy = p1.y - p2.y;
+                const distSq = dx * dx + dy * dy;
+
+                // 如果距离小于设定值，则连接
+                if (distSq < config.connectionDistance * config.connectionDistance) {
+                    // 根据距离计算透明度，越远越淡
+                    const alpha = 1 - Math.sqrt(distSq) / config.connectionDistance;
+                    ctx.globalAlpha = alpha * 0.5; // 基础透明度乘数
+                    ctx.beginPath();
+                    ctx.moveTo(p1.x, p1.y);
+                    ctx.lineTo(p2.x, p2.y);
+                    ctx.stroke();
+                }
+            }
+        }
+        ctx.globalAlpha = 1; // 重置透明度
+
+        // B. 绘制跟踪框系统
+        boxes.forEach(box => {
+            box.update();
+            box.draw(ctx);
         });
 
-        // 随机的屏幕抖动效果 (Glitch)
-        frame++;
-        if (Math.random() > 0.98) {
-            container.style.transform = `translate(${Math.random()*4-2}px, ${Math.random()*4-2}px)`;
-            setTimeout(() => { container.style.transform = 'translate(0,0)'; }, 50);
-        }
+        // C. 绘制顶部固定 UI
+        drawTopUI();
 
-        // 右侧的数据瀑布流装饰
-        ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
-        ctx.font = "10px monospace";
-        for(let i=0; i<10; i++) {
-            ctx.fillText(Math.random().toFixed(4), canvas.width - 60, 50 + i * 15);
-        }
-
-        requestAnimationFrame(loop);
+        requestAnimationFrame(animate);
     }
 
+    function drawTopUI() {
+        ctx.save();
+        ctx.fillStyle = config.uiTextColor;
+        ctx.textAlign = 'right';
+        
+        ctx.font = "bold 14px Courier New";
+        ctx.fillText("[Migratory_Server]", w - 20, 30);
+        
+        ctx.font = "12px Courier New";
+        let startY = 50;
+        const lines = [
+            "Future Timescale : 100 yrs",
+            "Atmospheric modeling",
+            "Carbon credits",
+            "[Flocking_permutations]"
+        ];
+        lines.forEach((line, i) => {
+            ctx.fillText(line, w - 20, startY + i * 16);
+        });
+
+        // 简单的顶部线框云模拟 (用几个半透明椭圆)
+        ctx.strokeStyle = "rgba(255,255,255,0.2)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(w - 150, 40, 100, 30, Math.PI / 12, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(w - 250, 20, 80, 20, -Math.PI / 12, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        ctx.restore();
+    }
+
+
+    // --- 启动 ---
     startCamera();
-    loop();
+    animate();
 
 </script>
 </body>
 </html>
+
