@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Precision Site Survey</title>
+    <title>Sodeoka Isolux Effect</title>
     <style>
         body, html {
             margin: 0;
@@ -12,90 +12,183 @@
             height: 100%;
             background-color: #000;
             overflow: hidden;
-            /* 使用系统等宽字体，更像工程软件 */
-            font-family: 'Menlo', 'Consolas', 'Monaco', monospace; 
         }
-
-        #container {
-            position: relative;
-            width: 100%;
-            height: 100%;
-        }
-
-        video {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            /* 降低对比度，让画面变灰，突出白色的数据线 */
-            filter: contrast(0.9) brightness(0.8) grayscale(0.2); 
-            z-index: 1;
-        }
-
         canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
+            display: block;
             width: 100%;
             height: 100%;
-            z-index: 2;
         }
-
-        /* 添加一个暗角层，让视觉聚焦中心 */
-        .vignette {
+        #ui {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: radial-gradient(circle, transparent 50%, rgba(0,0,0,0.6) 100%);
-            z-index: 3;
+            bottom: 30px;
+            left: 20px;
+            color: rgba(255,255,255,0.8);
+            font-family: monospace;
+            z-index: 10;
             pointer-events: none;
+            mix-blend-mode: exclusion;
         }
     </style>
 </head>
 <body>
 
-<div id="container">
-    <video id="video" autoplay playsinline muted></video>
-    <div class="vignette"></div>
-    <canvas id="canvas"></canvas>
-</div>
+    <div id="ui">
+        ISOLUX_RENDERER_V1<br>
+        YOSHI_SODEOKA_STYLE<br>
+        <span id="fps">FPS: --</span>
+    </div>
+    
+    <canvas id="glcanvas"></canvas>
 
 <script>
-    // --- 配置：精密风格参数 ---
-    const config = {
-        primaryColor: '#ffffff',      // 主色：纯白
-        accentColor: '#FF3B30',       // 强调色：工程红 (像徕卡相机/测绘仪)
-        secondaryColor: 'rgba(255, 255, 255, 0.4)', // 辅色：半透明白
-        gridColor: 'rgba(255, 255, 255, 0.15)', // 地面网格
-        scanSpeed: 2,                 // 扫描线速度
-        targetCount: 4                // 目标数量
+    // --- 1. 核心 WebGL 设置 ---
+    const canvas = document.getElementById('glcanvas');
+    const gl = canvas.getContext('webgl');
+    
+    if (!gl) {
+        alert("无法初始化 WebGL，您的浏览器可能不支持。");
+    }
+
+    // --- 2. Shader 程序 (这是显卡运行的代码，创造那种迷幻效果的关键) ---
+
+    // 顶点着色器 (处理位置，简单的铺满屏幕)
+    const vsSource = `
+        attribute vec4 aVertexPosition;
+        attribute vec2 aTextureCoord;
+        varying highp vec2 vTextureCoord;
+        void main(void) {
+            gl_Position = aVertexPosition;
+            vTextureCoord = aTextureCoord;
+        }
+    `;
+
+    // 片元着色器 (处理像素颜色 - Isolux 算法就在这里)
+    const fsSource = `
+        precision highp float;
+        varying highp vec2 vTextureCoord;
+        uniform sampler2D uSampler;
+        uniform float uTime;
+        uniform vec2 uResolution;
+
+        // 转换 RGB 到 亮度 (Luminance)
+        float getLuma(vec3 color) {
+            return dot(color, vec3(0.299, 0.587, 0.114));
+        }
+
+        // 伪随机噪声
+        float random(vec2 st) {
+            return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+        }
+
+        void main(void) {
+            // 1. 获取摄像头当前像素
+            vec2 uv = vTextureCoord;
+            // 简单的镜像处理
+            // uv.x = 1.0 - uv.x; 
+            
+            vec4 texColor = texture2D(uSampler, uv);
+            
+            // 2. 计算亮度
+            float luma = getLuma(texColor.rgb);
+
+            // 3. 创造 Isolux (等照度线) 效果
+            // 原理：用 sin 函数把连续的亮度切割成条纹
+            // uTime 让线条缓缓流动
+            float lines = sin(luma * 40.0 + uTime * 2.0); 
+            
+            // 让线条边缘锐利一点 (Step function)
+            lines = smoothstep(0.4, 0.6, lines); 
+            
+            // 4. Sodeoka 风格配色 (霓虹热感图)
+            // 我们根据亮度混合几种高饱和度颜色
+            
+            // 暗部：深蓝/紫
+            vec3 col1 = vec3(0.1, 0.0, 0.3); 
+            // 中部：洋红/红
+            vec3 col2 = vec3(1.0, 0.0, 0.5); 
+            // 亮部：青色/酸性绿
+            vec3 col3 = vec3(0.0, 1.0, 0.8);
+            
+            vec3 finalColor = mix(col1, col2, luma * 2.0);
+            if(luma > 0.5) finalColor = mix(col2, col3, (luma - 0.5) * 2.0);
+
+            // 5. 叠加线条 (黑色指纹线)
+            // 如果 lines 值低，就显示黑色，否则显示霓虹色
+            // 增加一点噪声模拟模拟信号的粗糙感
+            float noise = random(uv * uTime) * 0.1;
+            
+            if (lines < 0.2 + noise) {
+                finalColor = vec3(0.0, 0.0, 0.0); // 线条颜色 (黑)
+            } else {
+                // 增加一点辉光感
+                finalColor *= 1.2;
+            }
+
+            // 6. 稍微混合一点原始视频，增加层次感
+            // finalColor = mix(finalColor, texColor.rgb, 0.2);
+
+            gl_FragColor = vec4(finalColor, 1.0);
+        }
+    `;
+
+    // --- 3. WebGL 辅助函数 ---
+    function initShaderProgram(gl, vsSource, fsSource) {
+        const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+        const shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert('Shader 初始化失败: ' + gl.getProgramInfoLog(shaderProgram));
+            return null;
+        }
+        return shaderProgram;
+    }
+
+    function loadShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert('Shader 编译失败: ' + gl.getShaderInfoLog(shader));
+            gl.deleteShader(shader);
+            return null;
+        }
+        return shader;
+    }
+
+    const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+    
+    const programInfo = {
+        program: shaderProgram,
+        attribLocations: {
+            vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+            textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
+        },
+        uniformLocations: {
+            uSampler: gl.getUniformLocation(shaderProgram, 'uSampler'),
+            uTime: gl.getUniformLocation(shaderProgram, 'uTime'),
+            uResolution: gl.getUniformLocation(shaderProgram, 'uResolution'),
+        },
     };
 
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
+    // --- 4. 几何体设置 (一个矩形铺满屏幕) ---
+    const positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    const positions = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
 
-    let w, h;
-    let frame = 0;
+    const textureCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
+    const textureCoordinates = [0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0]; // 翻转Y轴适配 WebGL
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);
 
-    // --- 1. 初始化 ---
-    function resize() {
-        // 处理高清屏 (Retina)
-        const dpr = window.devicePixelRatio || 1;
-        w = window.innerWidth;
-        h = window.innerHeight;
-        canvas.width = w * dpr;
-        canvas.height = h * dpr;
-        canvas.style.width = w + 'px';
-        canvas.style.height = h + 'px';
-        ctx.scale(dpr, dpr);
-    }
-    window.addEventListener('resize', resize);
-    resize();
+    // --- 5. 摄像头视频流处理 ---
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
 
     async function startCamera() {
         try {
@@ -104,248 +197,78 @@
                 audio: false
             });
             video.srcObject = stream;
+            video.play();
+            render();
         } catch (e) {
-            console.warn("Camera fallback");
+            alert("请使用 HTTPS 访问并允许摄像头权限。");
         }
     }
 
-    // --- 2. 视觉组件类 ---
+    // 创建纹理
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    // 放入一个初始像素防止警告
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
 
-    // 目标标记 (Target Marker) - 带有旋转光圈和引线
-    class Target {
-        constructor(id) {
-            this.id = id;
-            this.reset();
-        }
-
-        reset() {
-            this.x = Math.random() * (w - 100) + 50;
-            this.y = Math.random() * (h * 0.6) + h * 0.2;
-            
-            // 目标数据
-            this.label = `TGT-${(Math.random()*1000).toFixed(0).padStart(4, '0')}`;
-            this.dist = (Math.random() * 50 + 10).toFixed(1) + 'm';
-            this.type = Math.random() > 0.5 ? 'BIO' : 'STR'; // Biological / Structural
-            
-            // 动画状态
-            this.angle = Math.random() * Math.PI * 2;
-            this.spinSpeed = (Math.random() - 0.5) * 0.02;
-            this.life = 300 + Math.random() * 300;
-            this.opacity = 0;
-            
-            // 漂浮偏移
-            this.floatOffset = Math.random() * Math.PI * 2;
-        }
-
-        update() {
-            this.life--;
-            this.angle += this.spinSpeed;
-            
-            // 渐入渐出
-            if (this.life > 550) this.opacity += 0.02;
-            else if (this.life < 50) this.opacity -= 0.02;
-            this.opacity = Math.max(0, Math.min(1, this.opacity));
-
-            // 轻微上下浮动
-            this.y += Math.sin(frame * 0.02 + this.floatOffset) * 0.3;
-
-            if (this.life <= 0) this.reset();
-        }
-
-        draw(ctx) {
-            if (this.opacity <= 0.01) return;
-            ctx.save();
-            ctx.globalAlpha = this.opacity;
-            
-            const size = 20;
-
-            // 1. 中心十字
-            ctx.strokeStyle = config.primaryColor;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(this.x - 5, this.y); ctx.lineTo(this.x + 5, this.y);
-            ctx.moveTo(this.x, this.y - 5); ctx.lineTo(this.x, this.y + 5);
-            ctx.stroke();
-
-            // 2. 旋转的断开圆环 (Dashed Orbit)
-            ctx.strokeStyle = config.secondaryColor;
-            ctx.save();
-            ctx.translate(this.x, this.y);
-            ctx.rotate(this.angle);
-            ctx.beginPath();
-            ctx.arc(0, 0, size, 0, Math.PI * 0.5); // 1/4圆
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(0, 0, size, Math.PI, Math.PI * 1.5); // 对角线1/4圆
-            ctx.stroke();
-            ctx.restore();
-
-            // 3. 引线 (Leader Line) - 类似建筑图纸的标注线
-            // 向右上或右下折线
-            const labelX = this.x + 40;
-            const labelY = this.y - 30;
-            
-            ctx.strokeStyle = config.primaryColor;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(this.x + size/2, this.y - size/2); // 从圆环边缘开始
-            ctx.lineTo(this.x + 25, this.y - 25); // 斜线
-            ctx.lineTo(labelX, labelY + 5); // 直线接到文字下
-            ctx.stroke();
-
-            // 连接点实心圆
-            ctx.fillStyle = config.accentColor; // 红色点
-            ctx.beginPath();
-            ctx.arc(this.x + 25, this.y - 25, 2, 0, Math.PI*2);
-            ctx.fill();
-
-            // 4. 信息卡片 (Info Block)
-            ctx.textAlign = 'left';
-            
-            // 标签背景 (半透明黑)
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillRect(labelX, labelY - 12, 90, 32);
-            
-            // 顶部高亮条
-            ctx.fillStyle = config.primaryColor;
-            ctx.fillRect(labelX, labelY - 12, 90, 1);
-
-            // 文字内容
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 10px Menlo';
-            ctx.fillText(this.label, labelX + 4, labelY);
-            
-            ctx.fillStyle = '#ccc';
-            ctx.font = '9px Menlo';
-            ctx.fillText(`${this.type} / ${this.dist}`, labelX + 4, labelY + 12);
-
-            ctx.restore();
+    function updateTexture() {
+        if (video.readyState >= video.HAVE_CURRENT_DATA) {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
         }
     }
 
-    // 地面扫描网格 (Perspective Grid)
-    class ScannerGrid {
-        draw(ctx) {
-            ctx.save();
-            ctx.strokeStyle = config.gridColor;
-            ctx.lineWidth = 1;
-            
-            const horizon = h * 0.55;
-            const centerX = w / 2;
-            
-            // 纵向放射线
-            ctx.beginPath();
-            for(let i=-5; i<=5; i++) {
-                const xOffset = i * (w * 0.3);
-                ctx.moveTo(centerX + xOffset * 0.1, horizon);
-                ctx.lineTo(centerX + xOffset * 1.5, h);
-            }
-            ctx.stroke();
-
-            // 横向扫描线 (不断向下移动)
-            const scanOffset = (frame * config.scanSpeed) % 200; 
-            
-            ctx.beginPath();
-            // 只画一根亮的扫描线
-            let yScan = horizon + Math.pow(scanOffset / 200, 2) * (h - horizon);
-            
-            ctx.strokeStyle = config.accentColor;
-            ctx.globalAlpha = 1 - (scanOffset/200); // 越近越透明
-            ctx.lineWidth = 2;
-            ctx.moveTo(0, yScan);
-            ctx.lineTo(w, yScan);
-            ctx.stroke();
-
-            // 画几根固定的淡横线
-            ctx.strokeStyle = config.gridColor;
-            ctx.lineWidth = 1;
-            ctx.globalAlpha = 0.3;
-            ctx.beginPath();
-            for(let j=0; j<5; j++) {
-                let y = horizon + Math.pow(j/5, 2) * (h - horizon);
-                ctx.moveTo(0, y);
-                ctx.lineTo(w, y);
-            }
-            ctx.stroke();
-
-            ctx.restore();
-        }
+    // --- 6. 渲染循环 ---
+    let startTime = 0;
+    
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
     }
+    window.addEventListener('resize', resize);
+    resize();
 
-    // 屏幕周边的 HUD 装饰 (Frame)
-    function drawHUD(ctx) {
-        ctx.save();
-        ctx.strokeStyle = config.primaryColor;
-        ctx.fillStyle = config.primaryColor;
-        ctx.lineWidth = 1;
+    function render(now) {
+        now *= 0.001; // 转换为秒
+        if (!startTime) startTime = now;
+        const time = now - startTime;
 
-        // 1. 四角括号 (Viewfinder Corners)
-        const len = 20;
-        const pad = 10;
-        
-        // 左上
-        ctx.beginPath(); ctx.moveTo(pad, pad+len); ctx.lineTo(pad, pad); ctx.lineTo(pad+len, pad); ctx.stroke();
-        // 右上
-        ctx.beginPath(); ctx.moveTo(w-pad-len, pad); ctx.lineTo(w-pad, pad); ctx.lineTo(w-pad, pad+len); ctx.stroke();
-        // 右下
-        ctx.beginPath(); ctx.moveTo(w-pad, h-pad-len); ctx.lineTo(w-pad, h-pad); ctx.lineTo(w-pad-len, h-pad); ctx.stroke();
-        // 左下
-        ctx.beginPath(); ctx.moveTo(pad+len, h-pad); ctx.lineTo(pad, h-pad); ctx.lineTo(pad, h-pad-len); ctx.stroke();
+        updateTexture();
 
-        // 2. 顶部罗盘条 (Compass Strip)
-        const compY = 30;
-        const center = w/2;
-        ctx.fillStyle = 'rgba(255,255,255,0.1)';
-        ctx.fillRect(center - 100, 10, 200, 20);
-        
-        ctx.fillStyle = config.primaryColor;
-        ctx.textAlign = 'center';
-        ctx.font = '10px Menlo';
-        ctx.fillText('N   |   15   |   30   |   NE', center, 24);
-        
-        // 红色三角指示
-        ctx.fillStyle = config.accentColor;
-        ctx.beginPath();
-        ctx.moveTo(center, 32); ctx.lineTo(center-4, 38); ctx.lineTo(center+4, 38);
-        ctx.fill();
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
 
-        // 3. 底部状态栏
-        ctx.textAlign = 'left';
-        ctx.font = '10px Menlo';
-        ctx.fillText(`REC [${(frame/60).toFixed(2)}]`, 20, h - 20);
-        ctx.fillText(`ISO 800  F/2.8`, 120, h - 20);
+        gl.useProgram(programInfo.program);
 
-        ctx.textAlign = 'right';
-        ctx.fillText('LIDAR: ON', w - 20, h - 20);
+        // 绑定位置
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
 
-        ctx.restore();
-    }
+        // 绑定纹理坐标
+        gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
+        gl.vertexAttribPointer(programInfo.attribLocations.textureCoord, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(programInfo.attribLocations.textureCoord);
 
-    // --- 3. 运行循环 ---
-    const targets = Array.from({length: config.targetCount}, (_, i) => new Target(i));
-    const grid = new ScannerGrid();
+        // 激活纹理
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(programInfo.uniformLocations.uSampler, 0);
 
-    function loop() {
-        ctx.clearRect(0, 0, w, h);
-        frame++;
+        // 传递 Uniforms
+        gl.uniform1f(programInfo.uniformLocations.uTime, time);
+        gl.uniform2f(programInfo.uniformLocations.uResolution, canvas.width, canvas.height);
 
-        // A. 绘制网格
-        grid.draw(ctx);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        // B. 绘制目标
-        targets.forEach(t => {
-            t.update();
-            t.draw(ctx);
-        });
-
-        // C. 绘制 HUD
-        drawHUD(ctx);
-
-        requestAnimationFrame(loop);
+        requestAnimationFrame(render);
     }
 
     startCamera();
-    loop();
 
 </script>
 </body>
