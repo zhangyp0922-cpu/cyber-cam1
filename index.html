@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cyberpunk Data Scan</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace; /* 科技感字体 */
+        }
+        video {
+            display: none; /* 隐藏原始视频，只显示Canvas处理后的 */
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div>SYS.OP: SCANNING...</div>
+        <div>CAM_ID: 01-B</div>
+        <div id="fps">FPS: --</div>
+    </div>
+
+    <video id="video" autoplay playsinline webkit-playsinline></video>
+    <canvas id="canvas"></canvas>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const fpsDisplay = document.getElementById('fps');
+
+    // 调整 Canvas 尺寸
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 1. 调用摄像头
+    async function setupCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: 'environment', // 强制后置摄像头
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                },
+                audio: false
+            });
+            video.srcObject = stream;
+            video.play();
+        } catch (err) {
+            alert("无法访问摄像头，请确保使用 HTTPS 或本地 localhost 运行。\n错误: " + err);
+        }
+    }
+
+    // 虚拟的数据跟踪框对象
+    let targets = [];
+    
+    function createTarget() {
+        return {
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            w: 50 + Math.random() * 100,
+            h: 50 + Math.random() * 100,
+            life: 100 + Math.random() * 60, // 存在时间
+            color: Math.random() > 0.5 ? 'rgba(255, 255, 255, 0.8)' : 'rgba(200, 200, 200, 0.5)'
+        };
+    }
+
+    // 2. 核心渲染循环
+    function draw() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            // A. 绘制基础视频帧
+            // 计算保持比例的绘制尺寸
+            const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+            const x = (canvas.width / 2) - (video.videoWidth / 2) * scale;
+            const y = (canvas.height / 2) - (video.videoHeight / 2) * scale;
+            
+            ctx.drawImage(video, x, y, video.videoWidth * scale, video.videoHeight * scale);
+
+            // B. 故障艺术效果 (Glitch Effect)
+            // 随机切片错位
+            if (Math.random() > 0.7) { // 30% 几率发生
+                const sliceHeight = Math.random() * 50;
+                const sliceY = Math.random() * canvas.height;
+                const offset = (Math.random() - 0.5) * 40; // 左右错位距离
+                
+                // 从画布上截取一段图像，然后错位放回去
+                const slice = ctx.getImageData(0, sliceY, canvas.width, sliceHeight);
+                ctx.putImageData(slice, offset, sliceY);
+                
+                // 加一点随机色块
+                ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.2})`;
+                ctx.fillRect(Math.random() * canvas.width, sliceY, Math.random() * 100, sliceHeight);
+            }
+
+            // C. 绘制数据扫描框 (Visual Elements)
+            // 维护 targets 数组
+            if (targets.length < 5 && Math.random() > 0.95) targets.push(createTarget());
+            
+            targets.forEach((t, index) => {
+                t.life--;
+                
+                // 绘制细线框
+                ctx.beginPath();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = t.color;
+                ctx.rect(t.x, t.y, t.w, t.h);
+                ctx.stroke();
+
+                // 绘制边角的“十字准星”
+                ctx.fillStyle = '#fff';
+                const size = 2;
+                ctx.fillRect(t.x - size, t.y - size, size*2, size*2);
+                ctx.fillRect(t.x + t.w - size, t.y + t.h - size, size*2, size*2);
+
+                // 绘制随机数据文字
+                ctx.font = '10px Courier New';
+                ctx.fillStyle = 'rgba(255,255,255,0.7)';
+                ctx.fillText(`ID_${Math.floor(Math.random()*9999)}`, t.x, t.y - 5);
+
+                // 简单的连接线（模拟网格）
+                ctx.beginPath();
+                ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+                ctx.moveTo(t.x, 0);
+                ctx.lineTo(t.x, canvas.height);
+                ctx.stroke();
+
+                // 稍微移动框（模拟跟踪）
+                t.x += (Math.random() - 0.5) * 2;
+                t.y += (Math.random() - 0.5) * 2;
+            });
+
+            // 清理消失的框
+            targets = targets.filter(t => t.life > 0);
+
+            // D. 全局网格覆盖 (Grid Overlay)
+            // 模拟图中那种方格纸的感觉
+            /*
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 1;
+            const gridSize = 100;
+            for(let i=0; i<canvas.width; i+=gridSize) {
+                ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i, canvas.height); ctx.stroke();
+            }
+            for(let j=0; j<canvas.height; j+=gridSize) {
+                ctx.beginPath(); ctx.moveTo(0,j); ctx.lineTo(canvas.width, j); ctx.stroke();
+            }
+            */
+        }
+        
+        requestAnimationFrame(draw);
+    }
+
+    // 启动
+    setupCamera();
+    draw();
+
+</script>
+</body>
+</html>
