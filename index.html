@@ -3,264 +3,301 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sodeoka Thermal Cam</title>
+    <title>Sodeoka Swarm AR</title>
     <style>
         body, html {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            background-color: #111;
+            background-color: #000;
             overflow: hidden;
-            font-family: monospace;
-            color: #0f0;
+            font-family: 'Courier New', Courier, monospace;
         }
-        canvas {
-            display: block;
+
+        #container {
+            position: relative;
             width: 100%;
             height: 100%;
         }
-        /* 启动按钮层 */
-        #start-screen {
+
+        /* 1. 视频风格化：还原视频中那种高对比度、稍微带点末日感的灰色调 */
+        video {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0,0,0,0.9);
+            object-fit: cover;
+            /* 关键滤镜：去色 + 高对比 + 稍微压暗 */
+            filter: grayscale(80%) contrast(1.4) brightness(0.9) sepia(20%);
+            z-index: 1;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+        }
+        
+        /* 启动层 */
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
             z-index: 99;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-        }
-        button {
-            padding: 15px 30px;
-            font-size: 18px;
-            background: #0f0;
-            color: #000;
-            border: none;
-            cursor: pointer;
-            font-family: monospace;
-            margin-bottom: 20px;
-        }
-        /* 屏幕日志输出，用于排查问题 */
-        #logs {
-            width: 90%;
-            height: 100px;
-            overflow-y: auto;
-            border: 1px solid #333;
-            padding: 10px;
-            font-size: 12px;
-            color: #aaa;
-            background: #000;
+            color: #fff;
+            flex-direction: column;
         }
     </style>
 </head>
 <body>
 
-    <div id="start-screen">
-        <div style="color: #fff; margin-bottom: 20px; font-size: 20px;">Sodeoka 视觉特效</div>
-        <button id="btn-start">点击启动摄像头</button>
-        <div id="logs">等待用户操作...</div>
+<div id="container">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+    
+    <div id="overlay" onclick="start()">
+        <h1>SWARM_SIMULATION</h1>
+        <p>[ 点击屏幕启动 ]</p>
     </div>
-
-    <canvas id="glcanvas"></canvas>
+</div>
 
 <script>
-    const logBox = document.getElementById('logs');
-    function log(msg) {
-        logBox.innerHTML += `> ${msg}<br>`;
-        logBox.scrollTop = logBox.scrollHeight;
-        console.log(msg);
+    // --- 配置参数 ---
+    const config = {
+        birdCount: 150,        // 鸟的数量
+        birdSize: 4,           // 鸟的大小
+        birdSpeed: 3,          // 飞行速度
+        neighborDist: 50,      // 群聚感知的距离
+        separation: 15,        // 避让距离
+        color: '#1a1a1a',      // 鸟的颜色 (深黑灰，接近视频)
+        hudColor: 'rgba(255, 255, 255, 0.7)', // HUD 线条颜色
+        sunY: 0.3              // “太阳/雷达”在屏幕的高度比例
+    };
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let w, h;
+    let birds = [];
+
+    // --- 1. 鸟群算法 (Boids) 核心类 ---
+    // 这种算法模拟了鸟群的三个规则：分离(Separation)、对齐(Alignment)、凝聚(Cohesion)
+    class Bird {
+        constructor() {
+            this.pos = { x: Math.random() * w, y: Math.random() * h };
+            // 随机速度
+            this.vel = { x: (Math.random() - 0.5) * config.birdSpeed, y: (Math.random() - 0.5) * config.birdSpeed };
+            this.acc = { x: 0, y: 0 };
+        }
+
+        update() {
+            // 限制最大速度
+            const speed = Math.hypot(this.vel.x, this.vel.y);
+            if (speed > config.birdSpeed) {
+                this.vel.x = (this.vel.x / speed) * config.birdSpeed;
+                this.vel.y = (this.vel.y / speed) * config.birdSpeed;
+            }
+
+            this.pos.x += this.vel.x;
+            this.pos.y += this.vel.y;
+
+            // 边界处理：飞出屏幕后从另一边绕回来 (环绕世界)
+            if (this.pos.x < -10) this.pos.x = w + 10;
+            if (this.pos.x > w + 10) this.pos.x = -10;
+            if (this.pos.y < -10) this.pos.y = h + 10;
+            if (this.pos.y > h + 10) this.pos.y = -10;
+
+            // 重置加速度
+            this.acc = { x: 0, y: 0 };
+        }
+
+        // 绘制：画成视频里那种“V”字形的剪影
+        draw(ctx) {
+            const angle = Math.atan2(this.vel.y, this.vel.x);
+            
+            ctx.save();
+            ctx.translate(this.pos.x, this.pos.y);
+            ctx.rotate(angle);
+            
+            ctx.fillStyle = config.color;
+            ctx.beginPath();
+            // 绘制一个尖锐的三角形/V形
+            ctx.moveTo(config.birdSize * 2, 0);
+            ctx.lineTo(-config.birdSize, -config.birdSize);
+            ctx.lineTo(0, 0); // 尾部凹陷
+            ctx.lineTo(-config.birdSize, config.birdSize);
+            ctx.closePath();
+            ctx.fill();
+            
+            ctx.restore();
+        }
+
+        // 核心：群聚行为
+        flock(birds) {
+            let alignment = { x: 0, y: 0 };
+            let cohesion = { x: 0, y: 0 };
+            let separation = { x: 0, y: 0 };
+            let total = 0;
+
+            for (let other of birds) {
+                let d = Math.hypot(this.pos.x - other.pos.x, this.pos.y - other.pos.y);
+                
+                if (other !== this && d < config.neighborDist) {
+                    total++;
+                    
+                    // 对齐：飞向邻居的平均方向
+                    alignment.x += other.vel.x;
+                    alignment.y += other.vel.y;
+
+                    // 凝聚：飞向邻居的中心
+                    cohesion.x += other.pos.x;
+                    cohesion.y += other.pos.y;
+
+                    // 分离：避开太近的邻居
+                    if (d < config.separation) {
+                        separation.x += (this.pos.x - other.pos.x) / d;
+                        separation.y += (this.pos.y - other.pos.y) / d;
+                    }
+                }
+            }
+
+            if (total > 0) {
+                // 平均化并施加力
+                alignment.x /= total; alignment.y /= total;
+                cohesion.x /= total; cohesion.y /= total;
+                // 凝聚的目标位置减去当前位置得到向量
+                cohesion.x -= this.pos.x; cohesion.y -= this.pos.y;
+
+                // 权重调整 (调整这些可以让鸟群更松散或更紧密)
+                this.vel.x += (alignment.x * 0.05 + cohesion.x * 0.01 + separation.x * 0.05);
+                this.vel.y += (alignment.y * 0.05 + cohesion.y * 0.01 + separation.y * 0.05);
+            }
+            
+            // 额外的力：稍微向屏幕中心聚拢，防止它们全部飞走
+            const centerX = w / 2;
+            const centerY = h * config.sunY; // 向“太阳”聚拢
+            this.vel.x += (centerX - this.pos.x) * 0.0001;
+            this.vel.y += (centerY - this.pos.y) * 0.0001;
+        }
     }
 
-    const canvas = document.getElementById('glcanvas');
-    const gl = canvas.getContext('webgl');
+    // --- 2. 视觉 HUD 绘制 (还原视频里的圆圈和虚线) ---
+    function drawHUD() {
+        const cx = w / 2;
+        const cy = h * config.sunY;
+
+        ctx.strokeStyle = config.hudColor;
+        ctx.lineWidth = 1;
+
+        // A. 太阳/雷达同心圆
+        const radii = [20, 50, 90, 140];
+        ctx.setLineDash([]); // 实线
+        
+        radii.forEach((r, i) => {
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            // 让最外圈稍微淡一点
+            ctx.globalAlpha = 1 - (i * 0.2);
+            ctx.stroke();
+        });
+        ctx.globalAlpha = 1;
+
+        // B. 视频中的“虚线抛物线” (Dashed Arcs)
+        // 模拟视频里连接左右的那些大弧线
+        ctx.setLineDash([2, 4]); // 虚线
+        ctx.beginPath();
+        // 左弧线
+        ctx.moveTo(0, h * 0.6);
+        ctx.quadraticCurveTo(cx - 50, cy, 0, h * 0.2);
+        ctx.stroke();
+        // 右弧线
+        ctx.beginPath();
+        ctx.moveTo(w, h * 0.6);
+        ctx.quadraticCurveTo(cx + 50, cy, w, h * 0.2);
+        ctx.stroke();
+        
+        // C. 中心的小十字
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
+        ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
+        ctx.stroke();
+
+        // D. 数据文字
+        ctx.fillStyle = "#fff";
+        ctx.font = "14px Courier New";
+        ctx.textAlign = "center";
+        
+        // 模拟视频里的 "237 ct"
+        ctx.fillText(`${config.birdCount} ct`, cx - 80, cy);
+        
+        // 模拟视频里的 "1 pm" 或时钟
+        const time = new Date();
+        const timeStr = time.getHours() + ":" + time.getMinutes().toString().padStart(2, '0');
+        ctx.fillText(timeStr, cx + 80, cy);
+        
+        // 底部小字
+        ctx.font = "10px Courier New";
+        ctx.fillText("ISOLUX_SWARM_V2 // TARGET_LOCKED", cx, h - 30);
+    }
+
+    // --- 3. 主程序 ---
     
-    if (!gl) {
-        log("错误: 您的设备不支持 WebGL。");
-    } else {
-        log("WebGL 初始化成功。");
+    function resize() {
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+
+    function loop() {
+        ctx.clearRect(0, 0, w, h);
+
+        // 1. 绘制 HUD (在鸟的下层还是上层？视频里好像都有，放底层比较清晰)
+        drawHUD();
+
+        // 2. 更新和绘制每一只鸟
+        for (let bird of birds) {
+            bird.flock(birds); // 计算群体行为
+            bird.update();     // 移动
+            bird.draw(ctx);    // 绘制
+        }
+
+        requestAnimationFrame(loop);
     }
 
-    // --- Shader 代码: 热感应/等高线风格 ---
-    const vsSource = `
-        attribute vec4 aVertexPosition;
-        attribute vec2 aTextureCoord;
-        varying highp vec2 vTextureCoord;
-        void main(void) {
-            gl_Position = aVertexPosition;
-            vTextureCoord = aTextureCoord;
-        }
-    `;
+    async function start() {
+        document.getElementById('overlay').style.display = 'none';
+        resize();
 
-    const fsSource = `
-        precision highp float;
-        varying highp vec2 vTextureCoord;
-        uniform sampler2D uSampler;
-        uniform float uTime;
-
-        // RGB转亮度
-        float getLuma(vec3 color) {
-            return dot(color, vec3(0.299, 0.587, 0.114));
+        // 初始化鸟群
+        for (let i = 0; i < config.birdCount; i++) {
+            birds.push(new Bird());
         }
 
-        // HSV转RGB (用于生成彩虹色)
-        vec3 hsv2rgb(vec3 c) {
-            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-        }
-
-        void main(void) {
-            vec2 uv = vTextureCoord;
-            // 镜像翻转
-            uv.x = 1.0 - uv.x;
-            
-            vec4 texColor = texture2D(uSampler, uv);
-            float luma = getLuma(texColor.rgb);
-
-            // --- 核心特效: Yoshi Sodeoka 风格 ---
-            
-            // 1. 制造“液态流动”的等高线
-            // 用 sin 函数根据亮度制造波纹，加上 uTime 让它流动
-            float wave = sin(luma * 15.0 - uTime * 2.0);
-            
-            // 2. 边缘锐化 (Posterize)
-            // 把连续的波纹变成硬边，像地形图
-            float edge = smoothstep(0.0, 0.2, wave) - smoothstep(0.3, 0.5, wave);
-
-            // 3. 迷幻热感配色 (Thermal Mapping)
-            // 低亮度=深蓝，高亮度=红/黄/白
-            // 这里的 0.7 + luma * 0.8 决定了色相的范围
-            vec3 thermalColor = hsv2rgb(vec3(0.6 - luma * 0.6, 1.0, luma * 1.5));
-
-            // 4. 混合线条
-            // 如果是波纹边缘，显示为黑色或高亮色
-            vec3 finalColor = mix(thermalColor, vec3(1.0, 1.0, 1.0), edge * 0.5);
-
-            gl_FragColor = vec4(finalColor, 1.0);
-        }
-    `;
-
-    // --- WebGL 样板代码 ---
-    function createShader(gl, type, source) {
-        const shader = gl.createShader(type);
-        gl.shaderSource(shader, source);
-        gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-            log('Shader编译错误: ' + gl.getShaderInfoLog(shader));
-            return null;
-        }
-        return shader;
-    }
-
-    const shaderProgram = gl.createProgram();
-    const vShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
-    const fShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
-    gl.attachShader(shaderProgram, vShader);
-    gl.attachShader(shaderProgram, fShader);
-    gl.linkProgram(shaderProgram);
-
-    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-        log('Program链接错误: ' + gl.getProgramInfoLog(shaderProgram));
-    }
-
-    const positionBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-
-    const textureCoordBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]), gl.STATIC_DRAW);
-
-    const attribs = {
-        pos: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
-        tex: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
-    };
-    const uniforms = {
-        sampler: gl.getUniformLocation(shaderProgram, 'uSampler'),
-        time: gl.getUniformLocation(shaderProgram, 'uTime'),
-    };
-
-    // --- 摄像头逻辑 ---
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.muted = true;
-    video.playsInline = true;
-
-    // 创建纹理
-    const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,255,255])); // 默认蓝色
-
-    async function startApp() {
-        log("正在请求摄像头权限...");
+        // 启动摄像头
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
                 audio: false
             });
-            log("摄像头权限已获取。");
             video.srcObject = stream;
-            
-            // 必须等待视频真正开始播放
-            video.onloadeddata = () => {
-                log("视频数据流已就绪。开始渲染。");
-                video.play();
-                document.getElementById('start-screen').style.display = 'none'; // 隐藏启动页
-                renderLoop();
-            };
-
         } catch (e) {
-            log("摄像头错误: " + e.name + " - " + e.message);
-            log("请检查：1. 是否使用HTTPS 2. 是否在Safari设置中拒绝了权限");
-        }
-    }
-
-    let startTime = 0;
-    function resize() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        gl.viewport(0, 0, canvas.width, canvas.height);
-    }
-    window.addEventListener('resize', resize);
-    resize();
-
-    function renderLoop(now) {
-        if (!startTime) startTime = now;
-        const time = (now - startTime) * 0.001;
-
-        if (video.readyState >= video.HAVE_CURRENT_DATA) {
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+            alert("摄像头启动失败 (请确保 HTTPS 环境)");
         }
 
-        gl.useProgram(shaderProgram);
-        
-        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-        gl.vertexAttribPointer(attribs.pos, 2, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(attribs.pos);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
-        gl.vertexAttribPointer(attribs.tex, 2, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(attribs.tex);
-
-        gl.uniform1i(uniforms.sampler, 0);
-        gl.uniform1f(uniforms.time, time);
-
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-        requestAnimationFrame(renderLoop);
+        loop();
     }
-
-    // 绑定按钮点击事件
-    document.getElementById('btn-start').addEventListener('click', startApp);
 
 </script>
 </body>
