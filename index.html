@@ -3,21 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sodeoka Swarm + Hand Control</title>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
-
+    <title>Retro Zine Cam</title>
     <style>
         body, html {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            background-color: #000;
+            background-color: #1a1a1a;
             overflow: hidden;
-            font-family: 'Courier New', Courier, monospace;
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
         }
 
         #container {
@@ -26,290 +21,187 @@
             height: 100%;
         }
 
-        /* 视频滤镜：保持你喜欢的Sodeoka灰色风格 */
+        /* 隐藏原始视频，我们只看处理后的 Canvas */
         video {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            filter: grayscale(80%) contrast(1.4) brightness(0.9) sepia(20%);
-            z-index: 1;
-            /* 解决移动端镜像问题 */
-            transform: scaleX(-1); 
+            display: none;
         }
 
         canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* 启动遮罩 */
+        #overlay {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            z-index: 2;
-        }
-        
-        #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #0f0;
-            background: rgba(0,0,0,0.8);
-            padding: 20px;
-            border: 1px solid #0f0;
-            z-index: 100;
-            text-align: center;
+            background: #000;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            font-weight: bold;
+            letter-spacing: 2px;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
 
 <div id="container">
-    <div id="loading">
-        SYSTEM_BOOT...<br>
-        LOADING_AI_MODULE...<br>
-        <span style="font-size:12px; color:#aaa;">(First load may take 10s)</span>
-    </div>
-
-    <video class="input_video" autoplay playsinline muted></video>
+    <div id="overlay" onclick="startApp()">[ TAP TO START FILM ]</div>
+    <video id="video" playsinline muted></video>
     <canvas id="canvas"></canvas>
 </div>
 
 <script>
+    const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const loadingDiv = document.getElementById('loading');
-    const videoElement = document.getElementsByClassName('input_video')[0];
+    const overlay = document.getElementById('overlay');
 
     let w, h;
-    let birds = [];
-    
-    // 目标点（默认为屏幕中心）
-    let target = { x: window.innerWidth/2, y: window.innerHeight * 0.3, active: false };
+    let frame = 0;
 
-    // --- 配置参数 ---
-    const config = {
-        birdCount: 100,        // 稍微减少数量以留出性能给AI
-        birdSize: 4,
-        maxSpeed: 6,           // 提高速度，让跟随感更强
-        maxForce: 0.2,         // 转向力
-        neighborDist: 50,
-        separation: 20,
-        color: '#1a1a1a',      // 黑色剪影
-        lockColor: '#ff3333'   // 锁定手的颜色(红色)
-    };
-
-    // --- 1. MediaPipe Hands 初始化 ---
-    const hands = new Hands({locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-    }});
-
-    hands.setOptions({
-        maxNumHands: 1,       // 只追踪一只手
-        modelComplexity: 0,   // 0=Lite (最快), 1=Full. 手机选0
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
-    });
-
-    hands.onResults(onHandResults);
-
-    // AI 回调函数
-    function onHandResults(results) {
-        // 如果检测到手
-        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            const landmarks = results.multiHandLandmarks[0];
-            // 取第9个关键点（中指根部）作为手掌中心
-            // MediaPipe返回的是0.0-1.0的比例，需要映射到屏幕坐标
-            // 注意：因为我们翻转了视频(scaleX -1)，这里x坐标可能需要反转，视具体设备而定
-            // 通常后置摄像头不需要镜像，前置需要。这里假设后置。
+    // --- 1. 核心绘制循环 ---
+    function render() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            // A. 绘制背景 (模拟胶片色彩)
+            ctx.filter = 'contrast(0.9) brightness(1.1) sepia(0.6) saturate(1.5) hue-rotate(-10deg)';
             
-            // 如果是后置摄像头，通常是镜像的，我们直接用
-            target.x = (1 - landmarks[9].x) * w; 
-            target.y = landmarks[9].y * h;
-            target.active = true;
-        } else {
-            target.active = false;
-            // 没手的时候，目标回到中心(太阳)
-            target.x = w / 2;
-            target.y = h * 0.3;
-        }
-    }
-
-    // --- 2. 鸟群算法 (带目标跟随) ---
-    class Bird {
-        constructor() {
-            this.pos = { x: Math.random() * w, y: Math.random() * h };
-            this.vel = { x: (Math.random()-0.5)*config.maxSpeed, y: (Math.random()-0.5)*config.maxSpeed };
-            this.acc = { x: 0, y: 0 };
-        }
-
-        applyForce(force) {
-            this.acc.x += force.x;
-            this.acc.y += force.y;
-        }
-
-        // 核心：寻找目标 (Seek)
-        seek(targetX, targetY) {
-            let desiredX = targetX - this.pos.x;
-            let desiredY = targetY - this.pos.y;
+            // 简单的居中裁剪绘制，防止变形
+            const scale = Math.max(w / video.videoWidth, h / video.videoHeight);
+            const xOffset = (w - video.videoWidth * scale) / 2;
+            const yOffset = (h - video.videoHeight * scale) / 2;
+            ctx.drawImage(video, xOffset, yOffset, video.videoWidth * scale, video.videoHeight * scale);
             
-            // 归一化并乘最大速度
-            let d = Math.hypot(desiredX, desiredY);
-            if (d > 0) {
-                desiredX = (desiredX / d) * config.maxSpeed;
-                desiredY = (desiredY / d) * config.maxSpeed;
-                
-                // 转向力 = 期望速度 - 当前速度
-                let steerX = desiredX - this.vel.x;
-                let steerY = desiredY - this.vel.y;
-                
-                // 限制转向力
-                let steerLen = Math.hypot(steerX, steerY);
-                if (steerLen > config.maxForce) {
-                    steerX = (steerX / steerLen) * config.maxForce;
-                    steerY = (steerY / steerLen) * config.maxForce;
+            ctx.filter = 'none'; // 重置滤镜以免影响后续绘制
+
+            // B. 绘制左侧的三个“特写镜头” (Cutouts)
+            // 逻辑：从画面中心附近截取小块，放大显示在左侧
+            
+            const boxW = w * 0.35; // 盒子宽度
+            const boxH = boxW * 0.7; // 盒子高度
+            const gap = 20;
+            const startX = 30; // 左边距
+            const startY = 50; // 顶边距
+
+            // 定义三个框的抓取源 (Source) 和 放置目标 (Dest)
+            const cutouts = [
+                { 
+                    // 框1：抓取画面中心偏上
+                    sx: video.videoWidth * 0.4, sy: video.videoHeight * 0.3, 
+                    sw: video.videoWidth * 0.2, sh: video.videoHeight * 0.2 
+                },
+                { 
+                    // 框2：抓取画面正中心 (放大倍数更高)
+                    sx: video.videoWidth * 0.45, sy: video.videoHeight * 0.45, 
+                    sw: video.videoWidth * 0.1, sh: video.videoHeight * 0.1 
+                },
+                { 
+                    // 框3：抓取画面中心偏下
+                    sx: video.videoWidth * 0.3, sy: video.videoHeight * 0.6, 
+                    sw: video.videoWidth * 0.2, sh: video.videoHeight * 0.2 
                 }
+            ];
+
+            // 循环绘制这三个框
+            cutouts.forEach((cut, i) => {
+                const destY = startY + i * (boxH + gap);
                 
-                return { x: steerX, y: steerY };
-            }
-            return { x: 0, y: 0 };
-        }
+                ctx.save();
+                
+                // 1. 绘制框内的视频内容
+                // 这里也加一点点不同的滤镜，让拼贴感更强
+                ctx.filter = 'contrast(1.2) sepia(0.4) saturate(1.2)';
+                ctx.drawImage(video, cut.sx, cut.sy, cut.sw, cut.sh, startX, destY, boxW, boxH);
+                ctx.filter = 'none';
 
-        flock(birds) {
-            let sep = {x:0,y:0}, ali = {x:0,y:0}, coh = {x:0,y:0};
-            let count = 0;
+                // 2. 绘制微弱的边框/阴影，增加纸张感
+                ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(startX, destY, boxW, boxH);
+                
+                ctx.restore();
+            });
 
-            for (let other of birds) {
-                let d = Math.hypot(this.pos.x - other.pos.x, this.pos.y - other.pos.y);
-                if (other !== this && d < config.neighborDist) {
-                    count++;
-                    // 对齐
-                    ali.x += other.vel.x; ali.y += other.vel.y;
-                    // 凝聚
-                    coh.x += other.pos.x; coh.y += other.pos.y;
-                    // 分离
-                    if (d < config.separation) {
-                        sep.x += (this.pos.x - other.pos.x) / d;
-                        sep.y += (this.pos.y - other.pos.y) / d;
-                    }
-                }
-            }
-
-            if (count > 0) {
-                ali.x /= count; ali.y /= count;
-                ali.x = (ali.x / Math.hypot(ali.x, ali.y)) * config.maxSpeed || 0;
-                ali.x -= this.vel.x; // Steer
-
-                coh.x /= count; coh.y /= count;
-                coh = this.seek(coh.x, coh.y); // Steer towards center
-            }
-
-            // 权重系统
-            // 如果探测到手，Seek 权重极大
-            let seekForce = this.seek(target.x, target.y);
+            // C. 叠加复古纹理 (Texture Overlay)
             
-            if (target.active) {
-                // 有手：强力跟随
-                this.applyForce({ x: seekForce.x * 2.5, y: seekForce.y * 2.5 });
-                this.applyForce({ x: sep.x * 2.0, y: sep.y * 2.0 }); // 保持距离防止重叠
-                this.applyForce({ x: ali.x * 0.5, y: ali.y * 0.5 });
-            } else {
-                // 无手：闲散飞行
-                this.applyForce({ x: seekForce.x * 0.2, y: seekForce.y * 0.2 }); // 弱引力向太阳
-                this.applyForce({ x: sep.x * 1.5, y: sep.y * 1.5 });
-                this.applyForce({ x: ali.x * 1.0, y: ali.y * 1.0 });
-                this.applyForce({ x: coh.x * 1.0, y: coh.y * 1.0 });
-            }
-        }
+            // 1. 暖色光晕 (Warm Tint Overlay)
+            ctx.fillStyle = 'rgba(255, 160, 100, 0.15)'; // 橙红色半透明
+            ctx.globalCompositeOperation = 'overlay'; // 叠加模式
+            ctx.fillRect(0, 0, w, h);
+            ctx.globalCompositeOperation = 'source-over'; // 恢复默认
 
-        update() {
-            this.vel.x += this.acc.x;
-            this.vel.y += this.acc.y;
+            // 2. 噪点 (Noise)
+            drawNoise(ctx, w, h);
+
+            // 3. 折痕线 (Fold Lines) - 模拟海报折叠
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.lineWidth = 1;
+            // 竖线
+            ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
+            // 横线
+            ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
+
+
+            // D. 绘制平面设计元素 (Graphics & Typography)
             
-            // 限制速度
-            let speed = Math.hypot(this.vel.x, this.vel.y);
-            if (speed > config.maxSpeed) {
-                this.vel.x = (this.vel.x / speed) * config.maxSpeed;
-                this.vel.y = (this.vel.y / speed) * config.maxSpeed;
-            }
+            ctx.fillStyle = '#fff';
+            
+            // 1. 文字 "(1)"
+            ctx.font = '30px Helvetica';
+            ctx.fillText('(1)', 40, h/2 + 40);
 
-            this.pos.x += this.vel.x;
-            this.pos.y += this.vel.y;
-            this.acc = {x:0, y:0};
+            // 2. 文字 "the Lamb" (右侧)
+            ctx.font = '30px Helvetica';
+            ctx.textAlign = 'right';
+            ctx.fillText('the Lamb', w - 40, h/2 + 40);
 
-            // 边界环绕
-            if (this.pos.x < -20) this.pos.x = w + 20;
-            if (this.pos.x > w + 20) this.pos.x = -20;
-            if (this.pos.y < -20) this.pos.y = h + 20;
-            if (this.pos.y > h + 20) this.pos.y = -20;
+            // 3. 斜线装饰 "///" (右上角)
+            drawDiagonalLines(ctx, w - 80, 50);
+            
+            // 4. 斜线装饰 "///" (右下角)
+            drawDiagonalLines(ctx, w - 80, h - 80);
+
         }
+        
+        frame++;
+        requestAnimationFrame(render);
+    }
 
-        draw(ctx) {
-            const angle = Math.atan2(this.vel.y, this.vel.x);
-            ctx.save();
-            ctx.translate(this.pos.x, this.pos.y);
-            ctx.rotate(angle);
-            ctx.fillStyle = config.color;
+    // 辅助：绘制噪点
+    function drawNoise(ctx, w, h) {
+        // 为了性能，我们不每帧都重新生成所有噪点，而是随机画一些
+        // 更好的做法是预生成一张噪点图，这里用简易法
+        const cx = Math.random() * w;
+        const cy = Math.random() * h;
+        
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.fillRect(0, 0, w, h); // 整体稍微提亮模拟胶片灰雾
+    }
+
+    // 辅助：绘制斜线 ///
+    function drawDiagonalLines(ctx, x, y) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        const size = 40;
+        const spacing = 15;
+        
+        for(let i=0; i<3; i++) {
             ctx.beginPath();
-            ctx.moveTo(config.birdSize * 3, 0);
-            ctx.lineTo(-config.birdSize, -config.birdSize * 1.5);
-            ctx.lineTo(0, 0);
-            ctx.lineTo(-config.birdSize, config.birdSize * 1.5);
-            ctx.fill();
-            ctx.restore();
+            ctx.moveTo(x + i*spacing, y + size);
+            ctx.lineTo(x + i*spacing + size/2, y);
+            ctx.stroke();
         }
     }
 
-    // --- 3. 视觉 HUD ---
-    function drawHUD() {
-        // 如果有手，画锁定框
-        if (target.active) {
-            ctx.strokeStyle = config.lockColor;
-            ctx.lineWidth = 2;
-            const size = 30;
-            
-            ctx.save();
-            ctx.translate(target.x, target.y);
-            // 旋转动画
-            ctx.rotate(Date.now() / 200);
-            
-            // 画四个角 (锁定框)
-            ctx.beginPath();
-            ctx.moveTo(-size, -size + 10); ctx.lineTo(-size, -size); ctx.lineTo(-size + 10, -size);
-            ctx.moveTo(size, -size + 10); ctx.lineTo(size, -size); ctx.lineTo(size - 10, -size);
-            ctx.moveTo(size, size - 10); ctx.lineTo(size, size); ctx.lineTo(size - 10, size);
-            ctx.moveTo(-size, size - 10); ctx.lineTo(-size, size); ctx.lineTo(-size + 10, size);
-            ctx.stroke();
-            
-            // 虚线连接鸟群中心
-            ctx.setLineDash([4, 4]);
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(0, 0);
-            // 随便连一只鸟模拟分析
-            if(birds[0]) ctx.lineTo(birds[0].pos.x - target.x, birds[0].pos.y - target.y);
-            ctx.stroke();
-            
-            ctx.restore();
-            
-            // 锁定文字
-            ctx.fillStyle = config.lockColor;
-            ctx.font = "12px Courier New";
-            ctx.fillText("TARGET ACQUIRED", target.x + 40, target.y);
-        } else {
-            // 无手时，画太阳/雷达
-            const cx = w/2, cy = h*0.3;
-            ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-            ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.arc(cx, cy, 30, 0, Math.PI*2); ctx.stroke();
-            ctx.beginPath(); ctx.arc(cx, cy, 60, 0, Math.PI*2); ctx.stroke();
-            ctx.fillText("SCANNING...", cx - 30, cy + 80);
-        }
-    }
-
-    // --- 4. 启动逻辑 ---
-    
+    // --- 启动逻辑 ---
     function resize() {
         w = canvas.width = window.innerWidth;
         h = canvas.height = window.innerHeight;
@@ -317,36 +209,20 @@
     window.addEventListener('resize', resize);
     resize();
 
-    // 初始化鸟群
-    for(let i=0; i<config.birdCount; i++) birds.push(new Bird());
-
-    // 启动摄像头并连接 MediaPipe
-    const camera = new Camera(videoElement, {
-        onFrame: async () => {
-            // 每一帧视频都要送进 AI 处理
-            await hands.send({image: videoElement});
-            // 处理完后，开始画图
-            renderLoop();
-        },
-        width: 1280,
-        height: 720
-    });
-
-    function renderLoop() {
-        loadingDiv.style.display = 'none'; // 只要开始渲染，就隐藏 loading
-        ctx.clearRect(0, 0, w, h);
-
-        drawHUD();
-
-        for (let bird of birds) {
-            bird.flock(birds);
-            bird.update();
-            bird.draw(ctx);
+    async function startApp() {
+        overlay.style.display = 'none';
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: false
+            });
+            video.srcObject = stream;
+            video.play();
+            render();
+        } catch (e) {
+            alert("需要摄像头权限 / 请使用 HTTPS");
         }
     }
-
-    // 开始！
-    camera.start();
 
 </script>
 </body>
