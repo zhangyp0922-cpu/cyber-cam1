@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cyberpunk Data Scan</title>
+    <title>AI Data Vision</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
     <style>
         body, html {
             margin: 0;
@@ -12,45 +15,104 @@
             height: 100%;
             background-color: #000;
             overflow: hidden;
-            font-family: 'Courier New', Courier, monospace; /* 科技感字体 */
+            font-family: 'Courier New', Courier, monospace;
         }
+
+        /* 视频层：隐藏原始视频 */
         video {
-            display: none; /* 隐藏原始视频，只显示Canvas处理后的 */
+            display: none;
         }
+
+        /* 画布层：显示处理后的画面 */
         canvas {
-            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
             height: 100%;
+            z-index: 1;
         }
-        #ui-layer {
+
+        /* UI层：顶部的文字信息 */
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+            /* 模拟数据网格背景 */
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+        }
+
+        .status-bar {
             position: absolute;
             top: 20px;
             left: 20px;
-            color: rgba(255, 255, 255, 0.8);
-            font-size: 12px;
-            pointer-events: none;
+            color: #00ffcc;
+            text-shadow: 0 0 5px #00ffcc;
+            font-size: 14px;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-size: 20px;
+            text-align: center;
             z-index: 10;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border: 1px solid #fff;
+        }
+
+        /* 简单的故障闪烁动画 */
+        @keyframes glitch-anim {
+            0% { opacity: 1; transform: translateX(0); }
+            95% { opacity: 1; transform: translateX(0); }
+            98% { opacity: 0.8; transform: translateX(-2px); }
+            99% { opacity: 0.8; transform: translateX(2px); }
+            100% { opacity: 1; transform: translateX(0); }
+        }
+        
+        body {
+            animation: glitch-anim 2s infinite;
         }
     </style>
 </head>
 <body>
 
-    <div id="ui-layer">
-        <div>SYS.OP: SCANNING...</div>
-        <div>CAM_ID: 01-B</div>
-        <div id="fps">FPS: --</div>
+    <div id="loading">正在加载 AI 视觉模型...<br><span style="font-size:12px; color:#aaa;">(首次加载可能需要 10-20 秒)</span></div>
+    
+    <div id="ui-overlay">
+        <div class="status-bar">
+            SYSTEM: ONLINE<br>
+            MODE: OBJECT_TRACKING<br>
+            <span id="obj-count">TARGETS: 0</span>
+        </div>
     </div>
 
-    <video id="video" autoplay playsinline webkit-playsinline></video>
+    <video id="video" playsinline webkit-playsinline muted></video>
     <canvas id="canvas"></canvas>
 
 <script>
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const fpsDisplay = document.getElementById('fps');
+    const loadingMsg = document.getElementById('loading');
+    const objCountSpan = document.getElementById('obj-count');
 
-    // 调整 Canvas 尺寸
+    let model = null;
+    let detections = []; // 存储识别结果
+    let isDetecting = false;
+
+    // 调整画布尺寸
     function resize() {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
@@ -58,126 +120,138 @@
     window.addEventListener('resize', resize);
     resize();
 
-    // 1. 调用摄像头
-    async function setupCamera() {
+    // 1. 初始化程序
+    async function main() {
+        // A. 启动摄像头
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: {
-                    facingMode: 'environment', // 强制后置摄像头
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
+                    facingMode: 'environment',
+                    width: { ideal: 640 }, // 降低分辨率以提高性能
+                    height: { ideal: 480 }
                 },
                 audio: false
             });
             video.srcObject = stream;
-            video.play();
-        } catch (err) {
-            alert("无法访问摄像头，请确保使用 HTTPS 或本地 localhost 运行。\n错误: " + err);
-        }
-    }
-
-    // 虚拟的数据跟踪框对象
-    let targets = [];
-    
-    function createTarget() {
-        return {
-            x: Math.random() * canvas.width,
-            y: Math.random() * canvas.height,
-            w: 50 + Math.random() * 100,
-            h: 50 + Math.random() * 100,
-            life: 100 + Math.random() * 60, // 存在时间
-            color: Math.random() > 0.5 ? 'rgba(255, 255, 255, 0.8)' : 'rgba(200, 200, 200, 0.5)'
-        };
-    }
-
-    // 2. 核心渲染循环
-    function draw() {
-        if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            // A. 绘制基础视频帧
-            // 计算保持比例的绘制尺寸
-            const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
-            const x = (canvas.width / 2) - (video.videoWidth / 2) * scale;
-            const y = (canvas.height / 2) - (video.videoHeight / 2) * scale;
             
-            ctx.drawImage(video, x, y, video.videoWidth * scale, video.videoHeight * scale);
-
-            // B. 故障艺术效果 (Glitch Effect)
-            // 随机切片错位
-            if (Math.random() > 0.7) { // 30% 几率发生
-                const sliceHeight = Math.random() * 50;
-                const sliceY = Math.random() * canvas.height;
-                const offset = (Math.random() - 0.5) * 40; // 左右错位距离
-                
-                // 从画布上截取一段图像，然后错位放回去
-                const slice = ctx.getImageData(0, sliceY, canvas.width, sliceHeight);
-                ctx.putImageData(slice, offset, sliceY);
-                
-                // 加一点随机色块
-                ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.2})`;
-                ctx.fillRect(Math.random() * canvas.width, sliceY, Math.random() * 100, sliceHeight);
-            }
-
-            // C. 绘制数据扫描框 (Visual Elements)
-            // 维护 targets 数组
-            if (targets.length < 5 && Math.random() > 0.95) targets.push(createTarget());
-            
-            targets.forEach((t, index) => {
-                t.life--;
-                
-                // 绘制细线框
-                ctx.beginPath();
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = t.color;
-                ctx.rect(t.x, t.y, t.w, t.h);
-                ctx.stroke();
-
-                // 绘制边角的“十字准星”
-                ctx.fillStyle = '#fff';
-                const size = 2;
-                ctx.fillRect(t.x - size, t.y - size, size*2, size*2);
-                ctx.fillRect(t.x + t.w - size, t.y + t.h - size, size*2, size*2);
-
-                // 绘制随机数据文字
-                ctx.font = '10px Courier New';
-                ctx.fillStyle = 'rgba(255,255,255,0.7)';
-                ctx.fillText(`ID_${Math.floor(Math.random()*9999)}`, t.x, t.y - 5);
-
-                // 简单的连接线（模拟网格）
-                ctx.beginPath();
-                ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-                ctx.moveTo(t.x, 0);
-                ctx.lineTo(t.x, canvas.height);
-                ctx.stroke();
-
-                // 稍微移动框（模拟跟踪）
-                t.x += (Math.random() - 0.5) * 2;
-                t.y += (Math.random() - 0.5) * 2;
+            // 等待视频加载元数据
+            await new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    resolve();
+                };
             });
-
-            // 清理消失的框
-            targets = targets.filter(t => t.life > 0);
-
-            // D. 全局网格覆盖 (Grid Overlay)
-            // 模拟图中那种方格纸的感觉
-            /*
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
-            ctx.lineWidth = 1;
-            const gridSize = 100;
-            for(let i=0; i<canvas.width; i+=gridSize) {
-                ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i, canvas.height); ctx.stroke();
-            }
-            for(let j=0; j<canvas.height; j+=gridSize) {
-                ctx.beginPath(); ctx.moveTo(0,j); ctx.lineTo(canvas.width, j); ctx.stroke();
-            }
-            */
+        } catch (e) {
+            alert("摄像头启动失败: " + e.message);
+            return;
         }
-        
-        requestAnimationFrame(draw);
+
+        // B. 加载 AI 模型
+        try {
+            model = await cocoSsd.load(); // 加载 COCO-SSD 模型
+            loadingMsg.style.display = 'none'; // 隐藏加载提示
+            predictLoop(); // 开始识别循环
+            renderLoop();  // 开始绘图循环
+        } catch (e) {
+            alert("模型加载失败，请检查网络 (需要访问 Google/jsDelivr CDN)");
+            console.error(e);
+        }
     }
 
-    // 启动
-    setupCamera();
-    draw();
+    // 2. AI 识别循环 (独立循环，不阻塞渲染)
+    async function predictLoop() {
+        if(video.readyState === video.HAVE_ENOUGH_DATA) {
+            // 进行预测
+            detections = await model.detect(video);
+            // 更新 UI 数字
+            objCountSpan.innerText = `TARGETS: ${detections.length}`;
+        }
+        // 使用 requestAnimationFrame 递归调用，但允许 GPU 喘息
+        requestAnimationFrame(predictLoop);
+    }
+
+    // 3. 渲染循环 (只负责画画，保证流畅)
+    function renderLoop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // A. 绘制视频背景 (拉伸适配屏幕)
+        // 简单的覆盖式绘制，模拟HUD全屏效果
+        ctx.filter = 'contrast(1.2) brightness(1.1) grayscale(0.2)'; // 加一点滤镜增强赛博感
+        
+        // 计算保持比例的填充
+        const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+        const xOffset = (canvas.width - video.videoWidth * scale) / 2;
+        const yOffset = (canvas.height - video.videoHeight * scale) / 2;
+        
+        ctx.drawImage(video, xOffset, yOffset, video.videoWidth * scale, video.videoHeight * scale);
+        ctx.filter = 'none'; // 重置滤镜
+
+        // B. 绘制 AI 识别框
+        // 此时 detections 数组里已经是包含了 [x, y, width, height, class, score] 的真实数据
+        detections.forEach(item => {
+            // 坐标需要根据视频缩放比例进行转换
+            // 注意：AI 返回的坐标是基于原始 video 分辨率的 (640x480)
+            const x = item.bbox[0] * scale + xOffset;
+            const y = item.bbox[1] * scale + yOffset;
+            const w = item.bbox[2] * scale;
+            const h = item.bbox[3] * scale;
+
+            // 风格：绘制四个角标 (Tech Corners)
+            const color = '#fff';
+            const lineLen = 15;
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = color;
+            ctx.shadowBlur = 4;
+            ctx.shadowColor = color;
+
+            ctx.beginPath();
+            // 左上角
+            ctx.moveTo(x, y + lineLen); ctx.lineTo(x, y); ctx.lineTo(x + lineLen, y);
+            // 右上角
+            ctx.moveTo(x + w - lineLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + lineLen);
+            // 右下角
+            ctx.moveTo(x + w, y + h - lineLen); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - lineLen, y + h);
+            // 左下角
+            ctx.moveTo(x + lineLen, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - lineLen);
+            ctx.stroke();
+
+            // 风格：绘制半透明填充块
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.fillRect(x, y, w, h);
+
+            // 风格：标签文字
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Courier New';
+            ctx.shadowBlur = 0;
+            const label = `${item.class.toUpperCase()} ${(item.score * 100).toFixed(0)}%`;
+            ctx.fillText(label, x + 5, y - 8);
+            
+            // 风格：连接线 (模拟数据分析)
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x + w/2, y + h/2); // 从中心点
+            ctx.lineTo(x + w + 50, y - 50); // 向右上方延伸
+            ctx.stroke();
+            
+            // 延伸处的小数据点
+            ctx.fillStyle = '#00ffcc';
+            ctx.fillRect(x + w + 48, y - 52, 4, 4);
+        });
+
+        // C. 装饰性网格/噪点 (用 Canvas 绘制轻量级噪点)
+        // 简单的随机横线
+        if (Math.random() > 0.8) {
+             ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+             const h = Math.random() * canvas.height;
+             ctx.fillRect(0, h, canvas.width, 2);
+        }
+
+        requestAnimationFrame(renderLoop);
+    }
+
+    // 启动主程序
+    main();
 
 </script>
 </body>
