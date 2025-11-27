@@ -3,55 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sodeoka Isolux Effect</title>
+    <title>Sodeoka Thermal Cam</title>
     <style>
         body, html {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            background-color: #000;
+            background-color: #111;
             overflow: hidden;
+            font-family: monospace;
+            color: #0f0;
         }
         canvas {
             display: block;
             width: 100%;
             height: 100%;
         }
-        #ui {
+        /* 启动按钮层 */
+        #start-screen {
             position: absolute;
-            bottom: 30px;
-            left: 20px;
-            color: rgba(255,255,255,0.8);
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 99;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            background: #0f0;
+            color: #000;
+            border: none;
+            cursor: pointer;
             font-family: monospace;
-            z-index: 10;
-            pointer-events: none;
-            mix-blend-mode: exclusion;
+            margin-bottom: 20px;
+        }
+        /* 屏幕日志输出，用于排查问题 */
+        #logs {
+            width: 90%;
+            height: 100px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            padding: 10px;
+            font-size: 12px;
+            color: #aaa;
+            background: #000;
         }
     </style>
 </head>
 <body>
 
-    <div id="ui">
-        ISOLUX_RENDERER_V1<br>
-        YOSHI_SODEOKA_STYLE<br>
-        <span id="fps">FPS: --</span>
+    <div id="start-screen">
+        <div style="color: #fff; margin-bottom: 20px; font-size: 20px;">Sodeoka 视觉特效</div>
+        <button id="btn-start">点击启动摄像头</button>
+        <div id="logs">等待用户操作...</div>
     </div>
-    
+
     <canvas id="glcanvas"></canvas>
 
 <script>
-    // --- 1. 核心 WebGL 设置 ---
+    const logBox = document.getElementById('logs');
+    function log(msg) {
+        logBox.innerHTML += `> ${msg}<br>`;
+        logBox.scrollTop = logBox.scrollHeight;
+        console.log(msg);
+    }
+
     const canvas = document.getElementById('glcanvas');
     const gl = canvas.getContext('webgl');
     
     if (!gl) {
-        alert("无法初始化 WebGL，您的浏览器可能不支持。");
+        log("错误: 您的设备不支持 WebGL。");
+    } else {
+        log("WebGL 初始化成功。");
     }
 
-    // --- 2. Shader 程序 (这是显卡运行的代码，创造那种迷幻效果的关键) ---
-
-    // 顶点着色器 (处理位置，简单的铺满屏幕)
+    // --- Shader 代码: 热感应/等高线风格 ---
     const vsSource = `
         attribute vec4 aVertexPosition;
         attribute vec2 aTextureCoord;
@@ -62,147 +95,100 @@
         }
     `;
 
-    // 片元着色器 (处理像素颜色 - Isolux 算法就在这里)
     const fsSource = `
         precision highp float;
         varying highp vec2 vTextureCoord;
         uniform sampler2D uSampler;
         uniform float uTime;
-        uniform vec2 uResolution;
 
-        // 转换 RGB 到 亮度 (Luminance)
+        // RGB转亮度
         float getLuma(vec3 color) {
             return dot(color, vec3(0.299, 0.587, 0.114));
         }
 
-        // 伪随机噪声
-        float random(vec2 st) {
-            return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+        // HSV转RGB (用于生成彩虹色)
+        vec3 hsv2rgb(vec3 c) {
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
         }
 
         void main(void) {
-            // 1. 获取摄像头当前像素
             vec2 uv = vTextureCoord;
-            // 简单的镜像处理
-            // uv.x = 1.0 - uv.x; 
+            // 镜像翻转
+            uv.x = 1.0 - uv.x;
             
             vec4 texColor = texture2D(uSampler, uv);
-            
-            // 2. 计算亮度
             float luma = getLuma(texColor.rgb);
 
-            // 3. 创造 Isolux (等照度线) 效果
-            // 原理：用 sin 函数把连续的亮度切割成条纹
-            // uTime 让线条缓缓流动
-            float lines = sin(luma * 40.0 + uTime * 2.0); 
+            // --- 核心特效: Yoshi Sodeoka 风格 ---
             
-            // 让线条边缘锐利一点 (Step function)
-            lines = smoothstep(0.4, 0.6, lines); 
+            // 1. 制造“液态流动”的等高线
+            // 用 sin 函数根据亮度制造波纹，加上 uTime 让它流动
+            float wave = sin(luma * 15.0 - uTime * 2.0);
             
-            // 4. Sodeoka 风格配色 (霓虹热感图)
-            // 我们根据亮度混合几种高饱和度颜色
-            
-            // 暗部：深蓝/紫
-            vec3 col1 = vec3(0.1, 0.0, 0.3); 
-            // 中部：洋红/红
-            vec3 col2 = vec3(1.0, 0.0, 0.5); 
-            // 亮部：青色/酸性绿
-            vec3 col3 = vec3(0.0, 1.0, 0.8);
-            
-            vec3 finalColor = mix(col1, col2, luma * 2.0);
-            if(luma > 0.5) finalColor = mix(col2, col3, (luma - 0.5) * 2.0);
+            // 2. 边缘锐化 (Posterize)
+            // 把连续的波纹变成硬边，像地形图
+            float edge = smoothstep(0.0, 0.2, wave) - smoothstep(0.3, 0.5, wave);
 
-            // 5. 叠加线条 (黑色指纹线)
-            // 如果 lines 值低，就显示黑色，否则显示霓虹色
-            // 增加一点噪声模拟模拟信号的粗糙感
-            float noise = random(uv * uTime) * 0.1;
-            
-            if (lines < 0.2 + noise) {
-                finalColor = vec3(0.0, 0.0, 0.0); // 线条颜色 (黑)
-            } else {
-                // 增加一点辉光感
-                finalColor *= 1.2;
-            }
+            // 3. 迷幻热感配色 (Thermal Mapping)
+            // 低亮度=深蓝，高亮度=红/黄/白
+            // 这里的 0.7 + luma * 0.8 决定了色相的范围
+            vec3 thermalColor = hsv2rgb(vec3(0.6 - luma * 0.6, 1.0, luma * 1.5));
 
-            // 6. 稍微混合一点原始视频，增加层次感
-            // finalColor = mix(finalColor, texColor.rgb, 0.2);
+            // 4. 混合线条
+            // 如果是波纹边缘，显示为黑色或高亮色
+            vec3 finalColor = mix(thermalColor, vec3(1.0, 1.0, 1.0), edge * 0.5);
 
             gl_FragColor = vec4(finalColor, 1.0);
         }
     `;
 
-    // --- 3. WebGL 辅助函数 ---
-    function initShaderProgram(gl, vsSource, fsSource) {
-        const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
-        const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
-        const shaderProgram = gl.createProgram();
-        gl.attachShader(shaderProgram, vertexShader);
-        gl.attachShader(shaderProgram, fragmentShader);
-        gl.linkProgram(shaderProgram);
-        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-            alert('Shader 初始化失败: ' + gl.getProgramInfoLog(shaderProgram));
-            return null;
-        }
-        return shaderProgram;
-    }
-
-    function loadShader(gl, type, source) {
+    // --- WebGL 样板代码 ---
+    function createShader(gl, type, source) {
         const shader = gl.createShader(type);
         gl.shaderSource(shader, source);
         gl.compileShader(shader);
         if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-            alert('Shader 编译失败: ' + gl.getShaderInfoLog(shader));
-            gl.deleteShader(shader);
+            log('Shader编译错误: ' + gl.getShaderInfoLog(shader));
             return null;
         }
         return shader;
     }
 
-    const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
-    
-    const programInfo = {
-        program: shaderProgram,
-        attribLocations: {
-            vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
-            textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
-        },
-        uniformLocations: {
-            uSampler: gl.getUniformLocation(shaderProgram, 'uSampler'),
-            uTime: gl.getUniformLocation(shaderProgram, 'uTime'),
-            uResolution: gl.getUniformLocation(shaderProgram, 'uResolution'),
-        },
-    };
+    const shaderProgram = gl.createProgram();
+    const vShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+    const fShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+    gl.attachShader(shaderProgram, vShader);
+    gl.attachShader(shaderProgram, fShader);
+    gl.linkProgram(shaderProgram);
 
-    // --- 4. 几何体设置 (一个矩形铺满屏幕) ---
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        log('Program链接错误: ' + gl.getProgramInfoLog(shaderProgram));
+    }
+
     const positionBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    const positions = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
 
     const textureCoordBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
-    const textureCoordinates = [0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0]; // 翻转Y轴适配 WebGL
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]), gl.STATIC_DRAW);
 
-    // --- 5. 摄像头视频流处理 ---
+    const attribs = {
+        pos: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+        tex: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
+    };
+    const uniforms = {
+        sampler: gl.getUniformLocation(shaderProgram, 'uSampler'),
+        time: gl.getUniformLocation(shaderProgram, 'uTime'),
+    };
+
+    // --- 摄像头逻辑 ---
     const video = document.createElement('video');
     video.autoplay = true;
     video.muted = true;
     video.playsInline = true;
-
-    async function startCamera() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-                audio: false
-            });
-            video.srcObject = stream;
-            video.play();
-            render();
-        } catch (e) {
-            alert("请使用 HTTPS 访问并允许摄像头权限。");
-        }
-    }
 
     // 创建纹理
     const texture = gl.createTexture();
@@ -211,19 +197,33 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    // 放入一个初始像素防止警告
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,255,255])); // 默认蓝色
 
-    function updateTexture() {
-        if (video.readyState >= video.HAVE_CURRENT_DATA) {
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    async function startApp() {
+        log("正在请求摄像头权限...");
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: false
+            });
+            log("摄像头权限已获取。");
+            video.srcObject = stream;
+            
+            // 必须等待视频真正开始播放
+            video.onloadeddata = () => {
+                log("视频数据流已就绪。开始渲染。");
+                video.play();
+                document.getElementById('start-screen').style.display = 'none'; // 隐藏启动页
+                renderLoop();
+            };
+
+        } catch (e) {
+            log("摄像头错误: " + e.name + " - " + e.message);
+            log("请检查：1. 是否使用HTTPS 2. 是否在Safari设置中拒绝了权限");
         }
     }
 
-    // --- 6. 渲染循环 ---
     let startTime = 0;
-    
     function resize() {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
@@ -232,43 +232,35 @@
     window.addEventListener('resize', resize);
     resize();
 
-    function render(now) {
-        now *= 0.001; // 转换为秒
+    function renderLoop(now) {
         if (!startTime) startTime = now;
-        const time = now - startTime;
+        const time = (now - startTime) * 0.001;
 
-        updateTexture();
+        if (video.readyState >= video.HAVE_CURRENT_DATA) {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+        }
 
-        gl.clearColor(0.0, 0.0, 0.0, 1.0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-
-        gl.useProgram(programInfo.program);
-
-        // 绑定位置
+        gl.useProgram(shaderProgram);
+        
         gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-        gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 2, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+        gl.vertexAttribPointer(attribs.pos, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(attribs.pos);
 
-        // 绑定纹理坐标
         gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
-        gl.vertexAttribPointer(programInfo.attribLocations.textureCoord, 2, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(programInfo.attribLocations.textureCoord);
+        gl.vertexAttribPointer(attribs.tex, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(attribs.tex);
 
-        // 激活纹理
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.uniform1i(programInfo.uniformLocations.uSampler, 0);
-
-        // 传递 Uniforms
-        gl.uniform1f(programInfo.uniformLocations.uTime, time);
-        gl.uniform2f(programInfo.uniformLocations.uResolution, canvas.width, canvas.height);
+        gl.uniform1i(uniforms.sampler, 0);
+        gl.uniform1f(uniforms.time, time);
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        requestAnimationFrame(render);
+        requestAnimationFrame(renderLoop);
     }
 
-    startCamera();
+    // 绑定按钮点击事件
+    document.getElementById('btn-start').addEventListener('click', startApp);
 
 </script>
 </body>
